@@ -58,14 +58,14 @@ python3 flatpak/gen-cargo-sources.py Cargo.lock > flatpak/cargo-sources.json
    flatpak run io.github.iegoff.greenlight_rs consoles
    ```
 3. Open Steam → **Games → Add a Non-Steam Game**, tick **Greenlight (Rust)**, and add it.
-4. In the shortcut's **Properties → Launch options**, put the stream command, for example:
+4. Open the shortcut's **Properties**. Steam usually pre-fills **Launch options** with the Flatpak arguments (`run ... io.github.iegoff.greenlight_rs`). Keep those and **append** the stream command at the end, for example:
    ```
    home F4XXXXXXXXXXXXXX --resolution 1280x800 --low-latency
    ```
    or `cloud <TITLE_ID>` for xCloud.
 5. Launch it from Game Mode. Steam Input exposes the Deck's controls as an Xbox controller. The Steam button opens Steam's menu, so map a back button (e.g. L4) to the keyboard key **N** for the Xbox button.
 
-If there's no video, add `--video-sink waylandsink` or `--video-sink glimagesink` to the launch options. For logs, run the same command in Konsole with `GREENLIGHT_LOG=greenlight=debug` in front of `flatpak run`.
+If there's no video, add `--video-sink waylandsink` or `--video-sink glimagesink` to the launch options. For logs, run it from Konsole: `flatpak run --env=GREENLIGHT_LOG=greenlight=debug io.github.iegoff.greenlight_rs home F4XXXXXXXXXXXXXX`.
 
 ### From source
 
