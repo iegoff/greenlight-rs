@@ -166,7 +166,7 @@ impl Player {
         let audio_caps: gst::Caps = format!(
             "application/x-rtp,media=audio,encoding-name=OPUS,clock-rate=48000,payload=111,\
              encoding-params=(string)2,minptime=(string)10,useinbandfec=(string)1{}",
-            if config.stereo { ",stereo=(string)1,sprop-stereo=(string)1" } else { "" }
+            if config.stereo { ",stereo=(string)1" } else { "" }
         )
         .parse()
         .context("audio caps")?;

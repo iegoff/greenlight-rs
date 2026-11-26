@@ -1,2 +1,5 @@
 /target
 /*.bundle
+/*.flatpak
+/build-dir
+/.flatpak-builder

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.iegoff.greenlight_rs</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Greenlight (Rust)</name>
+  <summary>Stream games from your Xbox console or xCloud</summary>
+  <developer id="io.github.iegoff">
+    <name>greenlight-rs contributors</name>
+  </developer>
+  <description>
+    <p>
+      A native xCloud and Xbox home streaming client, ported from Greenlight to
+      Rust with GStreamer WebRTC. It is not affiliated with Microsoft or Xbox.
+    </p>
+    <ul>
+      <li>Stream from your Xbox One or Xbox Series console</li>
+      <li>Stream xCloud titles with Game Pass Ultimate</li>
+      <li>Gamepad support with rumble, plus keyboard controls</li>
+      <li>Hardware video decoding through VA-API</li>
+    </ul>
+    <p>
+      This is a command line application: sign in with "greenlight login",
+      then start a stream with "greenlight home CONSOLE_ID" or
+      "greenlight cloud TITLE_ID".
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.iegoff.greenlight_rs.desktop</launchable>
+  <url type="homepage">https://github.com/iegoff/greenlight-rs</url>
+  <url type="bugtracker">https://github.com/iegoff/greenlight-rs/issues</url>
+  <provides>
+    <binary>greenlight</binary>
+  </provides>
+  <supports>
+    <control>gamepad</control>
+    <control>keyboard</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-26"/>
+  </releases>
+</component>

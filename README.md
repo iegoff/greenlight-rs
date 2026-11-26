@@ -22,6 +22,53 @@ _Disclaimer: not affiliated with Microsoft, Xbox, Greenlight or Moonlight. All t
 
 ## Install
 
+### Flatpak (recommended, works on Steam Deck)
+
+Download `greenlight-rs.flatpak` from the [releases page](https://github.com/iegoff/greenlight-rs/releases), then:
+
+```bash
+flatpak install --user greenlight-rs.flatpak
+```
+
+The bundle points at Flathub, so the `org.freedesktop.Platform` 26.08 runtime is installed automatically. That runtime includes GStreamer 1.28 with WebRTC, VA-API hardware decoding and Wayland/GL sinks. Run the app with:
+
+```bash
+flatpak run io.github.iegoff.greenlight_rs --help
+```
+
+To build the Flatpak yourself:
+
+```bash
+flatpak install --user flathub org.freedesktop.Sdk//26.08 org.freedesktop.Sdk.Extension.rust-stable//26.08
+flatpak-builder --user --install --force-clean build-dir flatpak/io.github.iegoff.greenlight_rs.yml
+```
+
+Crates are vendored through `flatpak/cargo-sources.json`, so the build runs offline, as Flathub requires. After changing dependencies, regenerate it:
+
+```bash
+python3 flatpak/gen-cargo-sources.py Cargo.lock > flatpak/cargo-sources.json
+```
+
+### Steam Deck
+
+1. In **Desktop Mode**, open Konsole and install the Flatpak as above.
+2. Sign in and find your console ID:
+   ```bash
+   flatpak run io.github.iegoff.greenlight_rs login
+   flatpak run io.github.iegoff.greenlight_rs consoles
+   ```
+3. Open Steam → **Games → Add a Non-Steam Game**, tick **Greenlight (Rust)**, and add it.
+4. In the shortcut's **Properties → Launch options**, put the stream command, for example:
+   ```
+   home F4XXXXXXXXXXXXXX --resolution 1280x800 --low-latency
+   ```
+   or `cloud <TITLE_ID>` for xCloud.
+5. Launch it from Game Mode. Steam Input exposes the Deck's controls as an Xbox controller. The Steam button opens Steam's menu, so map a back button (e.g. L4) to the keyboard key **N** for the Xbox button.
+
+If there's no video, add `--video-sink waylandsink` or `--video-sink glimagesink` to the launch options. For logs, run the same command in Konsole with `GREENLIGHT_LOG=greenlight=debug` in front of `flatpak run`.
+
+### From source
+
 Requirements:
 
 - Rust 1.80 or newer.
@@ -125,6 +172,8 @@ cargo test
   - the handshake triggers the control authorization and the client-metadata input report;
   - gamepad/metadata input reports flow;
   - **decoded** audio and video reach the sinks.
+
+  The loopback test passes both on the host's GStreamer 1.24 and inside the Flatpak runtime's GStreamer 1.28.
 
 Not covered: the HTTP calls to Microsoft's real endpoints, and interoperability with real Xbox/xCloud servers.
 

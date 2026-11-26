@@ -25,7 +25,8 @@ struct FakeConsole {
 
 impl FakeConsole {
     fn new() -> Self {
-        // ultrafast x264 produces constrained-baseline, which the client offers as pt 103.
+        // ultrafast x264 produces constrained-baseline, which the client offers as pt 103;
+        // capssetter advertises the offered level so strict matchers (GStreamer >= 1.26) accept it.
         let pipeline = gst::parse::launch(
             "webrtcbin name=srv bundle-policy=max-bundle \
              audiotestsrc is-live=true wave=sine ! audioconvert ! audioresample ! opusenc ! \
@@ -33,12 +34,28 @@ impl FakeConsole {
              videotestsrc is-live=true pattern=ball ! video/x-raw,format=I420,width=320,height=240,framerate=30/1 ! \
                x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 ! \
                rtph264pay config-interval=-1 pt=103 ! \
+               capssetter caps=\"application/x-rtp,profile-level-id=(string)42e01f\" ! \
                application/x-rtp,media=video,encoding-name=H264,payload=103 ! queue ! srv.",
         )
         .expect("fake console pipeline")
         .downcast::<gst::Pipeline>()
         .unwrap();
         let webrtc = pipeline.by_name("srv").unwrap();
+
+        // Minimal codec preferences so the answerer matches the offered m-lines
+        // regardless of encoder-specific fields (profile-level-id, sprop-stereo).
+        // GStreamer >= 1.26 intersects these strictly at set-remote-description.
+        // Keyed by pad name: the transceiver kind is unknown until caps flow.
+        for (pad, caps) in [
+            ("sink_0", "application/x-rtp,media=audio,encoding-name=OPUS,clock-rate=48000,payload=111"),
+            ("sink_1", "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=103"),
+        ] {
+            let tr = webrtc
+                .static_pad(pad)
+                .unwrap()
+                .property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
+            tr.set_property("codec-preferences", caps.parse::<gst::Caps>().unwrap());
+        }
 
 
         let candidates: Arc<Mutex<Vec<IceCandidate>>> = Default::default();

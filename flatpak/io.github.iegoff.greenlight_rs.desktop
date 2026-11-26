@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Greenlight (Rust)
+GenericName=Xbox Streaming Client
+Comment=Stream games from your Xbox console or xCloud
+Exec=greenlight
+Icon=io.github.iegoff.greenlight_rs
+Terminal=true
+Categories=Game;Network;
+Keywords=xbox;xcloud;streaming;remote play;gamepass;

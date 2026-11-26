@@ -1,0 +1,52 @@
+app-id: io.github.iegoff.greenlight_rs
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: greenlight
+
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  # GPU (VA-API hardware decoding, GL rendering)
+  - --device=dri
+  # Gamepads and rumble (evdev). gilrs needs udev's device database to
+  # recognise joysticks.
+  - --device=all
+  - --filesystem=/run/udev:ro
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/greenlight/cargo
+    CARGO_NET_OFFLINE: 'true'
+
+modules:
+  - name: greenlight
+    buildsystem: simple
+    build-commands:
+      - cargo --offline build --release --locked
+      - install -Dm755 target/release/greenlight /app/bin/greenlight
+      - install -Dm644 flatpak/io.github.iegoff.greenlight_rs.desktop /app/share/applications/io.github.iegoff.greenlight_rs.desktop
+      - install -Dm644 flatpak/io.github.iegoff.greenlight_rs.metainfo.xml /app/share/metainfo/io.github.iegoff.greenlight_rs.metainfo.xml
+      - install -Dm644 flatpak/io.github.iegoff.greenlight_rs.svg /app/share/icons/hicolor/scalable/apps/io.github.iegoff.greenlight_rs.svg
+    sources:
+      # Local checkout. For Flathub, replace with:
+      #   - type: git
+      #     url: https://github.com/iegoff/greenlight-rs.git
+      #     commit: <commit sha>
+      - type: dir
+        path: ..
+        skip:
+          - target
+          - .flatpak-builder
+          - build-dir
+          - repo
+          - greenlight-rs.bundle
+      # Vendored crates for the offline build. Regenerate after changing
+      # dependencies: python3 flatpak/gen-cargo-sources.py Cargo.lock > flatpak/cargo-sources.json
+      - cargo-sources.json
