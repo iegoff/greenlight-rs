@@ -1,7 +1,9 @@
 app-id: io.github.iegoff.greenlight_rs
-runtime: org.freedesktop.Platform
-runtime-version: '26.08'
-sdk: org.freedesktop.Sdk
+# GNOME runtime: GTK4 + libadwaita for the GUI, plus GStreamer with WebRTC,
+# libnice and VA-API (it builds on the freedesktop 25.08 runtime).
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
 command: greenlight
