@@ -247,7 +247,7 @@ impl Ui {
         menu_box.append(&buttons);
         menu_box.append(
             &gtk::Label::builder()
-                .label("Hold View + Menu, press Esc or tap the screen to open this menu")
+                .label("Hold View + Menu, press F1 or tap the screen to open this menu")
                 .css_classes(["dim-label", "caption"])
                 .build(),
         );
@@ -344,7 +344,10 @@ impl Ui {
         }
         {
             let ui = ui.clone();
+            // Touch only: Steam's desktop controller layout turns triggers into
+            // mouse clicks, which must reach the game, not toggle the menu.
             let click = gtk::GestureClick::new();
+            click.set_touch_only(true);
             click.connect_released(move |_, _, _, _| {
                 let open = ui.w.menu.reveals_child();
                 ui.show_menu(!open);
@@ -730,9 +733,14 @@ impl Ui {
                     return glib::Propagation::Proceed;
                 }
                 match key {
-                    gdk::Key::Escape | gdk::Key::F1 => {
+                    gdk::Key::F1 => {
                         let open = ui.w.menu.reveals_child();
                         ui.show_menu(!open);
+                        return glib::Propagation::Stop;
+                    }
+                    // Escape only closes: Steam layouts may map a button to it.
+                    gdk::Key::Escape if ui.w.menu.reveals_child() => {
+                        ui.show_menu(false);
                         return glib::Propagation::Stop;
                     }
                     gdk::Key::F11 => {
@@ -828,7 +836,7 @@ impl Ui {
 
     // --- demo / screenshots ------------------------------------------------------
 
-    /// `GREENLIGHT_DEMO=login|consoles|stream` shows a page with sample data
+    /// `GREENLIGHT_DEMO=login|consoles|stream|stream-h264` shows a page with sample data
     /// (no network); `GREENLIGHT_SCREENSHOT=file.png` saves the window after
     /// a few seconds and quits. Used to check the UI headlessly.
     fn start_demo(&self, which: &str) {
@@ -842,7 +850,8 @@ impl Ui {
                     demo_console("F4000000000000BB", "Office", "XboxSeriesS", "Off", false),
                 ],
             ),
-            _ => self.demo_stream(),
+            "stream-h264" => self.demo_stream(true),
+            _ => self.demo_stream(false),
         }
         if let Ok(path) = std::env::var("GREENLIGHT_SCREENSHOT") {
             let ui = self.clone();
@@ -868,16 +877,46 @@ impl Ui {
         w.login_status.set_text("Waiting for you to sign in…");
     }
 
-    fn demo_stream(&self) {
+    fn demo_stream(&self, decoded: bool) {
         let Ok(sink) = self.make_video_sink() else { return };
         let pipeline = gst::Pipeline::new();
-        let src = gst::ElementFactory::make("videotestsrc").property("is-live", true).build().unwrap();
-        let caps = gst::ElementFactory::make("capsfilter")
-            .property("caps", gst::Caps::builder("video/x-raw").field("width", 1280).field("height", 720).build())
-            .build()
+        if decoded {
+            // Same tail as a real stream: H.264 -> decodebin -> leaky queue ->
+            // the prebuilt sink, with no videoconvert in between.
+            let head = gst::parse::bin_from_description(
+                "videotestsrc is-live=true pattern=smpte ! video/x-raw,format=I420,width=1280,height=720,framerate=30/1 ! \
+                 x264enc tune=zerolatency speed-preset=ultrafast ! h264parse ! decodebin name=dec",
+                false,
+            )
             .unwrap();
-        pipeline.add_many([&src, &caps, &sink]).unwrap();
-        gst::Element::link_many([&src, &caps, &sink]).unwrap();
+            let queue = gst::ElementFactory::make("queue")
+                .property("max-size-buffers", 1u32)
+                .property_from_str("leaky", "downstream")
+                .build()
+                .unwrap();
+            pipeline.add_many([head.upcast_ref::<gst::Element>(), &queue, &sink]).unwrap();
+            queue.link(&sink).unwrap();
+            let dec = head.by_name("dec").unwrap();
+            let head_weak = head.downgrade();
+            let queue_c = queue.clone();
+            dec.connect_pad_added(move |_, pad| {
+                let Some(head) = head_weak.upgrade() else { return };
+                let ghost = gst::GhostPad::with_target(pad).unwrap();
+                ghost.set_active(true).unwrap();
+                head.add_pad(&ghost).unwrap();
+                if let Err(e) = ghost.link(&queue_c.static_pad("sink").unwrap()) {
+                    eprintln!("demo link failed: {e:?}");
+                }
+            });
+        } else {
+            let src = gst::ElementFactory::make("videotestsrc").property("is-live", true).build().unwrap();
+            let caps = gst::ElementFactory::make("capsfilter")
+                .property("caps", gst::Caps::builder("video/x-raw").field("width", 1280).field("height", 720).build())
+                .build()
+                .unwrap();
+            pipeline.add_many([&src, &caps, &sink]).unwrap();
+            gst::Element::link_many([&src, &caps, &sink]).unwrap();
+        }
         let _ = pipeline.set_state(gst::State::Playing);
         // Keep the pipeline alive for the lifetime of the window.
         unsafe { self.w.window.set_data("demo-pipeline", pipeline) };

@@ -124,9 +124,11 @@ mod imp {
                     EventType::ButtonChanged(Button::RightTrigger2, v, _) => f.right_trigger = v,
                     EventType::AxisChanged(axis, v, _) => match axis {
                         Axis::LeftStickX => f.left_thumb_x = dz(v, deadzone),
-                        Axis::LeftStickY => f.left_thumb_y = dz(v, deadzone),
+                        // gilrs reports up as +1; frames use the browser
+                        // Gamepad API convention (up = -1), like Greenlight.
+                        Axis::LeftStickY => f.left_thumb_y = -dz(v, deadzone),
                         Axis::RightStickX => f.right_thumb_x = dz(v, deadzone),
-                        Axis::RightStickY => f.right_thumb_y = dz(v, deadzone),
+                        Axis::RightStickY => f.right_thumb_y = -dz(v, deadzone),
                         Axis::LeftZ => f.left_trigger = v.max(0.0),
                         Axis::RightZ => f.right_trigger = v.max(0.0),
                         _ => {}

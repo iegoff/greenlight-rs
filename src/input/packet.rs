@@ -50,9 +50,10 @@ pub mod buttons {
     pub const RIGHT_THUMB: u16 = 32768;
 }
 
-/// State of a single virtual gamepad. Axes are in `-1.0..=1.0`
-/// (positive Y = up, like the browser Gamepad API after inversion),
-/// triggers in `0.0..=1.0`.
+/// State of a single virtual gamepad. Axes are in `-1.0..=1.0` and follow
+/// the browser Gamepad API, as in Greenlight: X right = +1, **Y up = -1**.
+/// The encoder negates Y, so "up" goes on the wire as +32767. Triggers are
+/// in `0.0..=1.0`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct GamepadFrame {
     pub gamepad_index: u8,
@@ -379,7 +380,7 @@ mod tests {
         g.set_button(buttons::A, true);
         g.set_button(buttons::NEXUS, true);
         g.left_thumb_x = 1.0;
-        g.left_thumb_y = 1.0; // up -> negative on the wire
+        g.left_thumb_y = -1.0; // stick up (Gamepad API) -> +32767 on the wire
         g.right_trigger = 1.0;
         p.gamepads.push(g);
 
@@ -392,7 +393,7 @@ mod tests {
         assert_eq!(b[15], 0); // gamepad index
         assert_eq!(u16::from_le_bytes([b[16], b[17]]), buttons::A | buttons::NEXUS);
         assert_eq!(i16::from_le_bytes([b[18], b[19]]), 32767);
-        assert_eq!(i16::from_le_bytes([b[20], b[21]]), -32767);
+        assert_eq!(i16::from_le_bytes([b[20], b[21]]), 32767, "stick up must be positive on the wire");
         assert_eq!(u16::from_le_bytes([b[28], b[29]]), 65535);
         assert_eq!(&b[30..34], &[1, 0, 0, 0]);
         assert_eq!(&b[34..38], &[0, 0, 0, 1]);

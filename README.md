@@ -103,7 +103,7 @@ Run `greenlight` without a command (or start **Greenlight (Rust)** from your app
 
 - **Sign in:** scan the QR code with your phone and enter the code shown, or import an existing Greenlight sign-in.
 - **Your consoles:** pick a console and press **Stream**.
-- **While streaming:** open the menu with **Esc**/**F1**, a tap or click on the video, or by **holding View + Menu for a second** on the controller. From there:
+- **While streaming:** open the menu with **F1**, a tap on the screen, or by **holding View + Menu for a second** on the controller. From there:
   - **Xbox:** press the Xbox (guide) button;
   - **Stats:** show resolution, frame rate, bitrate, jitter, lost packets and the decoder;
   - **Fullscreen** (or **F11**);
