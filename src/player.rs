@@ -64,9 +64,12 @@ pub struct PlayerConfig {
     pub low_latency: bool,
     pub audio: bool,
     /// How long (roughly, in seconds) ICE keeps sending connectivity checks
-    /// on each candidate pair before giving up. libnice's default is ~2 s;
-    /// browsers keep trying for ~30 s, which matters when the console's
-    /// checks (which open its NAT) start a few seconds after ours.
+    /// on each candidate pair; 0 keeps libnice's default (~2 s).
+    ///
+    /// Keep it short: webrtcbin's libnice agent uses *regular* nomination
+    /// (fixed at construction), so it only nominates the working pair once
+    /// every other pair has finished. Unreachable pairs (e.g. the console's
+    /// private address seen from another network) must fail quickly.
     pub ice_check_secs: u32,
 }
 
@@ -83,7 +86,7 @@ impl Default for PlayerConfig {
             audio_sink: None,
             low_latency: false,
             audio: true,
-            ice_check_secs: 30,
+            ice_check_secs: 0,
         }
     }
 }
@@ -163,7 +166,9 @@ impl Player {
         if let Some(stun) = &config.stun_server {
             webrtc.set_property("stun-server", stun);
         }
-        configure_ice_timing(&webrtc, config.ice_check_secs);
+        if config.ice_check_secs > 0 {
+            configure_ice_timing(&webrtc, config.ice_check_secs);
+        }
         pipeline.add(&webrtc)?;
 
         let stats = Arc::new(Stats::default());

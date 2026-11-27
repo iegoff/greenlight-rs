@@ -173,7 +173,7 @@ async fn run_session(
     let mut connected = false;
     let mut last_bytes = 0u64;
     let mut last_frames = 0u64;
-    let connect_secs = opts.player.ice_check_secs as u64 + 20;
+    let connect_secs = opts.player.ice_check_secs.max(10) as u64 + 20;
     let connect_deadline = tokio::time::sleep(Duration::from_secs(connect_secs));
     tokio::pin!(connect_deadline);
 

@@ -114,8 +114,9 @@ struct StreamArgs {
     /// STUN server (the Xbox web client's by default); "none" to disable.
     #[arg(long, default_value = "stun://relay.communication.microsoft.com:3478")]
     stun: String,
-    /// How long ICE keeps trying each connection path, in seconds.
-    #[arg(long, default_value_t = 30)]
+    /// How long ICE keeps trying each connection path, in seconds (0 = libnice's ~2 s).
+    /// Longer values delay connecting, because ICE waits for every path to finish.
+    #[arg(long, default_value_t = 0)]
     ice_timeout: u32,
     /// Requested stream resolution reported to the server.
     #[arg(long, default_value = "1920x1080", value_parser = parse_resolution)]
