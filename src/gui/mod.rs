@@ -895,6 +895,7 @@ impl Ui {
             rtt_ms: None,
             decoder: Some("vah264dec".into()),
             jitter_buffer_ms: 20,
+            pipeline_latency_ms: Some(24.0),
         }));
         self.state.borrow_mut().streaming = true;
         self.show_menu(true);
@@ -919,10 +920,11 @@ fn page_with_header(content: &impl IsA<gtk::Widget>, header: Option<adw::HeaderB
 fn format_stats_multiline(s: &session::StreamStats) -> String {
     let opt = |v: Option<f64>, unit: &str| v.map(|v| format!("{v:.0} {unit}")).unwrap_or_else(|| "n/a".into());
     format!(
-        "Video    {} @ {} fps\nBitrate  {:.1} Mbit/s\nRTT      {}\nJitter   {}\nLost     {}\nBuffer   {} ms\nDecoder  {}",
+        "Video    {} @ {} fps\nBitrate  {:.1} Mbit/s\nLatency  {}\nRTT      {}\nJitter   {}\nLost     {}\nBuffer   {} ms\nDecoder  {}",
         s.video_size.map(|(w, h)| format!("{w}×{h}")).unwrap_or_else(|| "?".into()),
         s.fps,
         s.video_mbps,
+        opt(s.pipeline_latency_ms, "ms"),
         opt(s.rtt_ms, "ms"),
         opt(s.jitter_ms, "ms"),
         s.packets_lost.map(|l| format!("{l} packets")).unwrap_or_else(|| "n/a".into()),

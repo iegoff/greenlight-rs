@@ -130,6 +130,9 @@ pub struct Stats {
     pub video_bytes: AtomicU64,
     pub video_frames: AtomicU64,
     pub audio_bytes: AtomicU64,
+    /// Smoothed time (µs) from a video frame's arrival (its RTP running
+    /// time) to the decoded frame reaching the video sink. 0 = unknown.
+    pub video_latency_us: AtomicU64,
 }
 
 pub struct Player {
@@ -566,6 +569,19 @@ fn tune_element(factory: &str, el: &gst::Element) {
                 el.set_property("wait-for-keyframe", true);
             }
         }
+        "avdec_h264" => {
+            // Frame threading adds several frames of delay; slices don't.
+            if el.has_property("thread-type", None) {
+                el.set_property_from_str("thread-type", "slice");
+            }
+        }
+        "pulsesink" | "pipewiresink" | "alsasink" => {
+            // Default ring buffer is 200 ms; keep audio close to the picture.
+            if el.has_property("buffer-time", None) {
+                el.set_property("buffer-time", 60_000i64);
+                el.set_property("latency-time", 10_000i64);
+            }
+        }
         "opusdec" => {
             if el.has_property("use-inband-fec", None) {
                 el.set_property("use-inband-fec", true);
@@ -685,9 +701,10 @@ fn on_incoming_stream(
         let pipeline_weak = pipeline.downgrade();
         let config = config.clone();
         let events = events.clone();
+        let stats = stats.clone();
         decodebin.connect_pad_added(move |_, dpad| {
             let Some(pipeline) = pipeline_weak.upgrade() else { return };
-            if let Err(e) = on_decoded_pad(&pipeline, dpad, &config, &events) {
+            if let Err(e) = on_decoded_pad(&pipeline, dpad, &config, &events, &stats) {
                 let _ = events.send(PlayerEvent::Error(format!("linking decoded stream: {e:#}")));
             }
         });
@@ -698,27 +715,61 @@ fn on_incoming_stream(
     Ok(())
 }
 
+/// Measures how long decoded video frames take from arrival (their running
+/// time, assigned by the jitter buffer on receipt) to the sink queue.
+fn add_latency_probe(queue: &gst::Element, stats: Arc<Stats>) {
+    let el = queue.clone();
+    queue.static_pad("src").unwrap().add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+        let (Some(buffer), Some(now)) = (info.buffer(), el.current_running_time()) else {
+            return gst::PadProbeReturn::Ok;
+        };
+        let running = pad
+            .sticky_event::<gst::event::Segment>(0)
+            .and_then(|ev| ev.segment().downcast_ref::<gst::ClockTime>().and_then(|seg| seg.to_running_time(buffer.pts())));
+        if let Some(rt) = running {
+            let lat_us = now.saturating_sub(rt).useconds();
+            let old = stats.video_latency_us.load(Ordering::Relaxed);
+            // exponential moving average (1/16)
+            let new = if old == 0 { lat_us } else { (old * 15 + lat_us) / 16 };
+            stats.video_latency_us.store(new, Ordering::Relaxed);
+        }
+        gst::PadProbeReturn::Ok
+    });
+}
+
 fn on_decoded_pad(
     pipeline: &gst::Pipeline,
     pad: &gst::Pad,
     config: &PlayerConfig,
     events: &mpsc::UnboundedSender<PlayerEvent>,
+    stats: &Arc<Stats>,
 ) -> Result<()> {
     let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
     let name = caps.structure(0).map(|s| s.name().to_string()).unwrap_or_default();
 
+    // One frame at most, dropping the older one: always show the newest frame
+    // instead of queueing behind a slow sink.
     let queue = gst::ElementFactory::make("queue")
-        .property("max-size-buffers", 3u32)
+        .property("max-size-buffers", 1u32)
         .property("max-size-time", 0u64)
         .property("max-size-bytes", 0u32)
+        .property_from_str("leaky", "downstream")
         .build()?;
 
     let chain: Vec<gst::Element> = if name.starts_with("video/") {
+        add_latency_probe(&queue, stats.clone());
+        // A prebuilt sink (the GUI's gtk4paintablesink wrapper) does its own
+        // conversion/GL upload: don't force a CPU videoconvert in front of it,
+        // which would download GPU-decoded frames.
+        if let Some(el) = config.video_sink_element.as_ref().filter(|el| el.parent().is_none()) {
+            let sink = el.clone();
+            if !config.video_sync && sink.has_property("sync", None) {
+                sink.set_property("sync", false);
+            }
+            vec![queue, sink]
+        } else {
         let convert = gst::ElementFactory::make("videoconvert").build()?;
-        let sink = match &config.video_sink_element {
-            Some(el) if el.parent().is_none() => el.clone(),
-            _ => make_sink(config.video_sink.as_deref(), default_video_sink())?,
-        };
+        let sink = make_sink(config.video_sink.as_deref(), default_video_sink())?;
         if !config.video_sync && sink.has_property("sync", None) {
             sink.set_property("sync", false);
         }
@@ -743,7 +794,12 @@ fn on_decoded_pad(
             gst::PadProbeReturn::Ok
         });
         vec![queue, convert, sink]
+        }
     } else if name.starts_with("audio/") {
+        // Audio must not be dropped: plain queue, bounded in time.
+        queue.set_property("max-size-buffers", 0u32);
+        queue.set_property("max-size-time", 200_000_000u64);
+        queue.set_property_from_str("leaky", "no");
         let convert = gst::ElementFactory::make("audioconvert").build()?;
         let resample = gst::ElementFactory::make("audioresample").build()?;
         let sink = make_sink(config.audio_sink.as_deref(), "autoaudiosink")?;

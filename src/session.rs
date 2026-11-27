@@ -60,6 +60,9 @@ pub struct StreamStats {
     pub rtt_ms: Option<f64>,
     pub decoder: Option<String>,
     pub jitter_buffer_ms: u32,
+    /// Measured arrival → display-queue time of video frames (jitter buffer +
+    /// depayload + decode).
+    pub pipeline_latency_ms: Option<f64>,
 }
 
 pub type EventSender = mpsc::UnboundedSender<SessionEvent>;
@@ -68,10 +71,11 @@ pub type EventSender = mpsc::UnboundedSender<SessionEvent>;
 pub fn format_stats(s: &StreamStats) -> String {
     let opt = |v: Option<f64>, unit: &str| v.map(|v| format!("{v:.0} {unit}")).unwrap_or_else(|| "n/a".into());
     format!(
-        "{}  {} fps  {:.1} Mbit/s  RTT {}  jitter {}  lost {}  buffer {} ms  decoder {}",
+        "{}  {} fps  {:.1} Mbit/s  latency {}  RTT {}  jitter {}  lost {}  buffer {} ms  decoder {}",
         s.video_size.map(|(w, h)| format!("{w}x{h}")).unwrap_or_else(|| "?".into()),
         s.fps,
         s.video_mbps,
+        opt(s.pipeline_latency_ms, "ms"),
         opt(s.rtt_ms, "ms"),
         opt(s.jitter_ms, "ms"),
         s.packets_lost.map(|l| l.to_string()).unwrap_or_else(|| "n/a".into()),
@@ -306,6 +310,8 @@ async fn run_session(
                 stats.fps = frames - last_frames;
                 stats.video_size = protocol.server_video_size;
                 stats.jitter_buffer_ms = opts.player.latency_ms;
+                let lat = player.stats.video_latency_us.load(Ordering::Relaxed);
+                stats.pipeline_latency_ms = (lat > 0).then(|| lat as f64 / 1000.0);
                 last_bytes = bytes;
                 last_frames = frames;
                 emit(events, SessionEvent::Stats(stats));

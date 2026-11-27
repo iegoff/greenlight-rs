@@ -366,11 +366,16 @@ async fn negotiates_streams_and_channels_with_fake_console() {
     assert!(acked > 0, "the sender received no TWCC feedback from the client: {}", &console_stats[..console_stats.len().min(300)]);
 
     // Network stats + decoder name for the overlay.
-    let stats = player.webrtc_stats().await;
+    let mut stats = player.webrtc_stats().await;
+    let lat_us = player.stats.video_latency_us.load(std::sync::atomic::Ordering::Relaxed);
+    stats.pipeline_latency_ms = (lat_us > 0).then(|| lat_us as f64 / 1000.0);
     if std::env::var("LOOPBACK_DEBUG").is_ok() {
         eprintln!("STATS: {}", greenlight::session::format_stats(&stats));
     }
     assert!(stats.decoder.is_some(), "no decoder found: {stats:?}");
+    // Arrival → display-queue latency is measured (and sane on loopback).
+    let lat = player.stats.video_latency_us.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(lat > 0 && lat < 2_000_000, "implausible pipeline latency {lat} µs");
     assert!(stats.packets_lost.is_some(), "no inbound-rtp packets-lost: {stats:?}");
 
     player.stop();
