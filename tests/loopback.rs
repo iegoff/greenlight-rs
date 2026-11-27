@@ -46,9 +46,10 @@ impl FakeConsole {
         // regardless of encoder-specific fields (profile-level-id, sprop-stereo).
         // GStreamer >= 1.26 intersects these strictly at set-remote-description.
         // Keyed by pad name: the transceiver kind is unknown until caps flow.
+        // extmap-3 = transport-wide CC, which the real console also answers with.
         for (pad, caps) in [
-            ("sink_0", "application/x-rtp,media=audio,encoding-name=OPUS,clock-rate=48000,payload=111"),
-            ("sink_1", "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=103"),
+            ("sink_0", "application/x-rtp,media=audio,encoding-name=OPUS,clock-rate=48000,payload=111,extmap-3=(string)http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"),
+            ("sink_1", "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=103,extmap-3=(string)http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"),
         ] {
             let tr = webrtc
                 .static_pad(pad)
@@ -190,6 +191,12 @@ async fn negotiates_streams_and_channels_with_fake_console() {
     assert!(offer.contains("m=application"), "{offer}");
     assert!(offer.contains("stereo=1"), "{offer}");
     assert!(offer.contains("profile-level-id=4d001f"), "{offer}");
+    // Transport-wide congestion control header extension, as in the web client's offer.
+    assert_eq!(
+        offer.matches("a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01").count(),
+        2,
+        "TWCC extmap missing on audio/video: {offer}"
+    );
     // Browser-style offer: numeric mids and a 4-character ICE ufrag.
     assert!(offer.contains("a=group:BUNDLE 0 1 2"), "{offer}");
     let ufrag = offer.lines().find_map(|l| l.strip_prefix("a=ice-ufrag:")).unwrap().trim();
@@ -316,6 +323,47 @@ async fn negotiates_streams_and_channels_with_fake_console() {
     }
     assert!(sink_caps.iter().any(|c| c.starts_with("video/x-raw")), "no decoded video: {sink_caps:?}");
     assert!(sink_caps.iter().any(|c| c.starts_with("audio/x-raw")), "no decoded audio: {sink_caps:?}");
+
+    // Loss handling: keyframe wait/request on video, FEC + PLC on audio.
+    let mut tuned = (false, false);
+    for el in player.pipeline().iterate_recurse().into_iter().flatten() {
+        match el.factory().map(|f| f.name().to_string()).as_deref() {
+            Some("rtph264depay") => {
+                assert!(el.property::<bool>("wait-for-keyframe"));
+                assert!(el.property::<bool>("request-keyframe"));
+                tuned.0 = true;
+            }
+            Some("opusdec") => {
+                assert!(el.property::<bool>("use-inband-fec"));
+                tuned.1 = true;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(tuned, (true, true), "depayloader/decoder not found or not tuned");
+
+    // The fake console (the sender) must receive TWCC feedback from us.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let p = gst::Promise::with_change_func(move |r| {
+        let _ = tx.send(r.ok().flatten().map(|s| s.to_string()));
+    });
+    console.webrtc.emit_by_name::<()>("get-stats", &[&None::<gst::Pad>, &p]);
+    let console_stats = rx.await.unwrap().unwrap_or_default();
+    if std::env::var("LOOPBACK_DEBUG").is_ok() {
+        for part in console_stats.split("twcc").skip(1).take(2) {
+            eprintln!("TWCC: twcc{}", &part[..part.len().min(400)]);
+        }
+    }
+    // twcc-stats is escaped inside the stats string; pull out packets-recv.
+    let acked: u64 = console_stats
+        .split("twcc-stats")
+        .nth(1)
+        .and_then(|t| t.split("packets-recv").nth(1))
+        .and_then(|t| t.split("uint").nth(1))
+        .map(|t| t.chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect::<String>())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    assert!(acked > 0, "the sender received no TWCC feedback from the client: {}", &console_stats[..console_stats.len().min(300)]);
 
     // Network stats + decoder name for the overlay.
     let stats = player.webrtc_stats().await;

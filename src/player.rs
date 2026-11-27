@@ -72,6 +72,9 @@ pub struct PlayerConfig {
     /// Prebuilt video sink (e.g. a gtk4paintablesink created on the GTK main
     /// thread). Used for the first video stream instead of `video_sink`.
     pub video_sink_element: Option<gst::Element>,
+    /// Request retransmission of lost video packets. Off by default: with a
+    /// small jitter buffer the resent packets arrive too late to help.
+    pub nack: bool,
     pub audio: bool,
     /// How long (roughly, in seconds) ICE keeps sending connectivity checks
     /// on each candidate pair; 0 keeps libnice's default (~2 s).
@@ -101,6 +104,7 @@ impl Default for PlayerConfig {
             fullscreen: false,
             video_sync: false,
             video_sink_element: None,
+            nack: false,
             ice_check_secs: 0,
         }
     }
@@ -194,7 +198,8 @@ impl Player {
         // --- transceivers -------------------------------------------------
         let audio_caps: gst::Caps = format!(
             "application/x-rtp,media=audio,encoding-name=OPUS,clock-rate=48000,payload=111,\
-             encoding-params=(string)2,minptime=(string)10,useinbandfec=(string)1{}",
+             encoding-params=(string)2,minptime=(string)10,useinbandfec=(string)1,\
+             extmap-{TWCC_EXT_ID}=(string){TWCC_URI}{}",
             if config.stereo { ",stereo=(string)1" } else { "" }
         )
         .parse()
@@ -221,6 +226,10 @@ impl Player {
                         .field("rtcp-fb-nack-pli", true)
                         .field("rtcp-fb-ccm-fir", true)
                         .field("rtcp-fb-transport-cc", true)
+                        // Transport-wide congestion control feedback: lets the
+                        // console lower bitrate/resolution on a bad link, like
+                        // it does for the browser client.
+                        .field(format!("extmap-{TWCC_EXT_ID}").as_str(), TWCC_URI)
                         .build(),
                 );
             }
@@ -229,7 +238,7 @@ impl Player {
             "add-transceiver",
             &[&WebRTCRTPTransceiverDirection::Recvonly, &video_caps],
         );
-        video_tr.set_property("do-nack", true);
+        video_tr.set_property("do-nack", config.nack);
 
         // --- signals ------------------------------------------------------
         {
@@ -316,6 +325,7 @@ impl Player {
             let video_sync = config.video_sync;
             pipeline.connect_deep_element_added(move |_, _, el| {
                 let Some(factory) = el.factory() else { return };
+                tune_element(&factory.name(), el);
                 let klass = factory.metadata(gst::ELEMENT_METADATA_KLASS).unwrap_or_default();
                 if !(klass.contains("Sink") && klass.contains("Video")) || factory.name().starts_with("auto") {
                     return;
@@ -536,6 +546,37 @@ fn configure_ice_timing(webrtc: &gst::Element, secs: u32) {
     tracing::debug!(
         "ICE checks: first retry after {initial_ms} ms, {retransmissions} retransmissions (~{secs} s)"
     );
+}
+
+/// RTP header extension id and URI for transport-wide congestion control
+/// (same as the xbox.com web client's offer).
+pub const TWCC_EXT_ID: u32 = 3;
+pub const TWCC_URI: &str = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
+
+/// Loss handling like the browser client: on video loss, request a keyframe
+/// and wait for it rather than decoding broken frames; on audio loss, use
+/// Opus in-band FEC and packet-loss concealment.
+fn tune_element(factory: &str, el: &gst::Element) {
+    match factory {
+        "rtph264depay" => {
+            if el.has_property("request-keyframe", None) {
+                el.set_property("request-keyframe", true);
+            }
+            if el.has_property("wait-for-keyframe", None) {
+                el.set_property("wait-for-keyframe", true);
+            }
+        }
+        "opusdec" => {
+            if el.has_property("use-inband-fec", None) {
+                el.set_property("use-inband-fec", true);
+            }
+            if el.has_property("plc", None) {
+                el.set_property("plc", true);
+            }
+        }
+        _ => return,
+    }
+    tracing::debug!("tuned {factory} for packet loss");
 }
 
 fn hook_data_channel(dc: &WebRTCDataChannel, kind: ChannelKind, events: mpsc::UnboundedSender<PlayerEvent>) {

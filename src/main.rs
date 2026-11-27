@@ -98,6 +98,9 @@ struct StreamArgs {
     /// Disable audio playback.
     #[arg(long)]
     no_audio: bool,
+    /// Request retransmission of lost packets (only useful with --latency above the round-trip time).
+    #[arg(long)]
+    nack: bool,
     /// Jitter buffer latency in ms.
     #[arg(long, default_value_t = 20)]
     latency: u32,
@@ -166,6 +169,7 @@ impl StreamArgs {
                 fullscreen: self.fullscreen,
                 video_sync: self.video_sync,
                 video_sink_element: None,
+                nack: self.nack,
                 audio: !self.no_audio,
             },
             client: ClientConfig { width: self.resolution.0, height: self.resolution.1, ..Default::default() },
