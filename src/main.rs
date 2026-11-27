@@ -166,6 +166,7 @@ impl StreamArgs {
                 low_latency: self.low_latency,
                 fullscreen: self.fullscreen,
                 video_sync: self.video_sync,
+                video_sink_element: None,
                 audio: !self.no_audio,
             },
             client: ClientConfig { width: self.resolution.0, height: self.resolution.1, ..Default::default() },
@@ -220,6 +221,40 @@ fn api_for(http: &Http, token: &StreamingToken, region: Option<&str>, kind: Stre
     };
     tracing::info!("using {} region {} ({})", kind.as_str(), region.name, region.base_uri);
     Ok(XCloudApi::new(http.clone(), &region.base_uri, &token.gs_token, kind, locale))
+}
+
+/// Runs a session in the terminal: prints its events, ctrl-c disconnects.
+async fn run_cli_session(api: XCloudApi, msal: Arc<Msal>, target: &str, opts: SessionOptions) -> Result<()> {
+    use greenlight::session::{SessionCommand, SessionEvent};
+    let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                SessionEvent::Status(s) => eprintln!("{s}"),
+                SessionEvent::Queued { estimated_wait_secs } => match estimated_wait_secs {
+                    Some(s) => eprintln!("In queue. Estimated wait: {s}s"),
+                    None => eprintln!("In queue, waiting for a server..."),
+                },
+                SessionEvent::Connected => eprintln!("Connected."),
+                SessionEvent::StreamStarted => eprintln!("Stream started. Press ~ for stats, F12 to quit."),
+                SessionEvent::VideoSize { .. } | SessionEvent::Title(_) => {}
+                SessionEvent::Dialog { title, text } => eprintln!("[console] {title}: {text}"),
+                SessionEvent::Stats(s) => eprintln!("[stats] {}", greenlight::session::format_stats(&s)),
+                SessionEvent::Ended { .. } => break,
+            }
+        }
+    });
+    {
+        let cmd_tx = cmd_tx.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                eprintln!("Stopping stream...");
+                let _ = cmd_tx.send(SessionCommand::Disconnect);
+            }
+        });
+    }
+    session::run(api, msal, target, opts, ev_tx, cmd_rx).await
 }
 
 /// Renders `data` as a QR code using Unicode half blocks (two rows per line).
@@ -384,13 +419,13 @@ async fn main() -> Result<()> {
         Command::Home { console_id, stream } => {
             let mut api = app.home_api().await?;
             api.set_display(stream.resolution.0, stream.resolution.1);
-            session::run(api, app.msal.clone(), &console_id, stream.options()).await?;
+            run_cli_session(api, app.msal.clone(), &console_id, stream.options()).await?;
         }
         Command::Cloud { title_id, region, stream } => {
             let region = region.or(settings.xcloud_region.clone());
             let (mut api, _) = app.cloud_api(region.as_deref()).await?;
             api.set_display(stream.resolution.0, stream.resolution.1);
-            session::run(api, app.msal.clone(), &title_id, stream.options()).await?;
+            run_cli_session(api, app.msal.clone(), &title_id, stream.options()).await?;
         }
     }
     Ok(())

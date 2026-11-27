@@ -69,6 +69,9 @@ pub struct PlayerConfig {
     /// Synchronise video to the clock. Off by default: frames are shown as
     /// soon as they're decoded, like the web client.
     pub video_sync: bool,
+    /// Prebuilt video sink (e.g. a gtk4paintablesink created on the GTK main
+    /// thread). Used for the first video stream instead of `video_sink`.
+    pub video_sink_element: Option<gst::Element>,
     pub audio: bool,
     /// How long (roughly, in seconds) ICE keeps sending connectivity checks
     /// on each candidate pair; 0 keeps libnice's default (~2 s).
@@ -97,6 +100,7 @@ impl Default for PlayerConfig {
             audio: true,
             fullscreen: false,
             video_sync: false,
+            video_sink_element: None,
             ice_check_secs: 0,
         }
     }
@@ -442,6 +446,60 @@ impl Player {
         &self.webrtc
     }
 
+    /// Network statistics from webrtcbin's `get-stats` (fields that aren't
+    /// reported are left as `None`).
+    pub async fn webrtc_stats(&self) -> crate::session::StreamStats {
+        let mut out = crate::session::StreamStats::default();
+        let (p, rx) = promise();
+        self.webrtc.emit_by_name::<()>("get-stats", &[&None::<gst::Pad>, &p]);
+        let Ok(Ok(Ok(Some(reply)))) = tokio::time::timeout(Duration::from_millis(500), rx).await else {
+            return out;
+        };
+        static LOGGED: std::sync::Once = std::sync::Once::new();
+        LOGGED.call_once(|| tracing::debug!("webrtcbin stats: {reply}"));
+        let mut lost = 0i64;
+        let mut have_lost = false;
+        for (_, value) in reply.iter() {
+            let Ok(st) = value.get::<gst::Structure>() else { continue };
+            let kind = st.get::<gst_webrtc::WebRTCStatsType>("type").ok();
+            match kind {
+                Some(gst_webrtc::WebRTCStatsType::InboundRtp) => {
+                    if let Ok(l) = st.get::<i64>("packets-lost") {
+                        lost += l;
+                        have_lost = true;
+                    }
+                    if let Ok(j) = st.get::<f64>("jitter") {
+                        out.jitter_ms = Some(out.jitter_ms.unwrap_or(0.0).max(j * 1000.0));
+                    }
+                }
+                Some(gst_webrtc::WebRTCStatsType::RemoteInboundRtp)
+                | Some(gst_webrtc::WebRTCStatsType::CandidatePair) => {
+                    for f in ["round-trip-time", "current-round-trip-time"] {
+                        if let Ok(rtt) = st.get::<f64>(f) {
+                            if rtt > 0.0 {
+                                out.rtt_ms = Some(rtt * 1000.0);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if have_lost {
+            out.packets_lost = Some(lost);
+        }
+        out.decoder = self.decoder_name();
+        out
+    }
+
+    fn decoder_name(&self) -> Option<String> {
+        self.pipeline.iterate_recurse().into_iter().flatten().find_map(|el| {
+            let f = el.factory()?;
+            let klass = f.metadata(gst::ELEMENT_METADATA_KLASS).unwrap_or_default();
+            (klass.contains("Decoder") && klass.contains("Video")).then(|| f.name().to_string())
+        })
+    }
+
     pub fn stop(&self) {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
@@ -616,7 +674,10 @@ fn on_decoded_pad(
 
     let chain: Vec<gst::Element> = if name.starts_with("video/") {
         let convert = gst::ElementFactory::make("videoconvert").build()?;
-        let sink = make_sink(config.video_sink.as_deref(), default_video_sink())?;
+        let sink = match &config.video_sink_element {
+            Some(el) if el.parent().is_none() => el.clone(),
+            _ => make_sink(config.video_sink.as_deref(), default_video_sink())?,
+        };
         if !config.video_sync && sink.has_property("sync", None) {
             sink.set_property("sync", false);
         }

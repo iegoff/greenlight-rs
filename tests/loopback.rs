@@ -316,5 +316,13 @@ async fn negotiates_streams_and_channels_with_fake_console() {
     assert!(sink_caps.iter().any(|c| c.starts_with("video/x-raw")), "no decoded video: {sink_caps:?}");
     assert!(sink_caps.iter().any(|c| c.starts_with("audio/x-raw")), "no decoded audio: {sink_caps:?}");
 
+    // Network stats + decoder name for the overlay.
+    let stats = player.webrtc_stats().await;
+    if std::env::var("LOOPBACK_DEBUG").is_ok() {
+        eprintln!("STATS: {}", greenlight::session::format_stats(&stats));
+    }
+    assert!(stats.decoder.is_some(), "no decoder found: {stats:?}");
+    assert!(stats.packets_lost.is_some(), "no inbound-rtp packets-lost: {stats:?}");
+
     player.stop();
 }

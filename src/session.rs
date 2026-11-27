@@ -15,9 +15,72 @@ use crate::api::xcloud::{StreamKind, XCloudApi};
 use crate::auth::Msal;
 use crate::channels::{ClientConfig, Protocol, ProtocolEvent};
 use crate::input::keyboard::{self, ClientAction, Mapped};
-use crate::input::packet::{now_ms, MetadataFrame};
+use crate::input::packet::{buttons, now_ms, GamepadFrame, MetadataFrame};
 use crate::input::{gamepad, InputState};
 use crate::player::{Player, PlayerConfig, PlayerEvent};
+
+/// Progress and status updates from a running session (for the CLI or GUI).
+#[derive(Debug, Clone)]
+pub enum SessionEvent {
+    Status(String),
+    Queued { estimated_wait_secs: Option<i64> },
+    Connected,
+    /// Data channels are up and input is flowing.
+    StreamStarted,
+    VideoSize { width: u32, height: u32 },
+    Title(String),
+    Dialog { title: String, text: String },
+    Stats(StreamStats),
+    /// The session is over (normally or with an error message).
+    Ended { error: Option<String> },
+}
+
+/// Requests from the UI to a running session.
+#[derive(Debug, Clone)]
+pub enum SessionCommand {
+    Disconnect,
+    /// Tap the Xbox (Nexus) button.
+    PressNexus,
+    /// Keyboard key (GStreamer/GDK key name) pressed or released.
+    Key { name: String, pressed: bool },
+    RequestKeyframe,
+    SetStats(bool),
+}
+
+/// Once-per-second stream statistics. `None` = not available.
+#[derive(Debug, Clone, Default)]
+pub struct StreamStats {
+    pub video_mbps: f64,
+    pub fps: u64,
+    pub video_size: Option<(u32, u32)>,
+    pub packets_lost: Option<i64>,
+    pub jitter_ms: Option<f64>,
+    pub rtt_ms: Option<f64>,
+    pub decoder: Option<String>,
+    pub jitter_buffer_ms: u32,
+}
+
+pub type EventSender = mpsc::UnboundedSender<SessionEvent>;
+
+/// One-line human-readable stats (CLI output and overlay).
+pub fn format_stats(s: &StreamStats) -> String {
+    let opt = |v: Option<f64>, unit: &str| v.map(|v| format!("{v:.0} {unit}")).unwrap_or_else(|| "n/a".into());
+    format!(
+        "{}  {} fps  {:.1} Mbit/s  RTT {}  jitter {}  lost {}  buffer {} ms  decoder {}",
+        s.video_size.map(|(w, h)| format!("{w}x{h}")).unwrap_or_else(|| "?".into()),
+        s.fps,
+        s.video_mbps,
+        opt(s.rtt_ms, "ms"),
+        opt(s.jitter_ms, "ms"),
+        s.packets_lost.map(|l| l.to_string()).unwrap_or_else(|| "n/a".into()),
+        s.jitter_buffer_ms,
+        s.decoder.as_deref().unwrap_or("?"),
+    )
+}
+
+fn emit(events: &EventSender, ev: SessionEvent) {
+    let _ = events.send(ev);
+}
 
 pub struct SessionOptions {
     pub player: PlayerConfig,
@@ -32,7 +95,13 @@ pub struct SessionOptions {
 }
 
 /// Polls `/state` until the session is `Provisioned`.
-pub async fn wait_provisioned(api: &XCloudApi, msal: &Msal, session_id: &str, target: &str) -> Result<()> {
+pub async fn wait_provisioned(
+    api: &XCloudApi,
+    msal: &Msal,
+    session_id: &str,
+    target: &str,
+    events: &EventSender,
+) -> Result<()> {
     let mut connected = false;
     let mut queued = false;
     loop {
@@ -57,7 +126,7 @@ pub async fn wait_provisioned(api: &XCloudApi, msal: &Msal, session_id: &str, ta
                 if connected {
                     continue;
                 }
-                eprintln!("Authorizing console connection...");
+                emit(events, SessionEvent::Status("Authorizing console connection...".into()));
                 let token = msal.msal_token().await.context("console transfer token")?;
                 api.connect(session_id, &token.lpt).await.context("sending /connect")?;
                 connected = true;
@@ -65,14 +134,12 @@ pub async fn wait_provisioned(api: &XCloudApi, msal: &Msal, session_id: &str, ta
             "WaitingForResources" => {
                 if !queued {
                     queued = true;
-                    match api.waiting_times(target).await {
-                        Ok(w) => eprintln!("In queue. Estimated wait: {}s", w
-                            .get("estimatedTotalWaitTimeInSeconds")
-                            .and_then(|v| v.as_i64())
-                            .map(|v| v.to_string())
-                            .unwrap_or_else(|| "?".into())),
-                        Err(_) => eprintln!("In queue, waiting for a server..."),
-                    }
+                    let estimated_wait_secs = api
+                        .waiting_times(target)
+                        .await
+                        .ok()
+                        .and_then(|w| w.get("estimatedTotalWaitTimeInSeconds").and_then(|v| v.as_i64()));
+                    emit(events, SessionEvent::Queued { estimated_wait_secs });
                 }
             }
             "Failed" => {
@@ -86,19 +153,32 @@ pub async fn wait_provisioned(api: &XCloudApi, msal: &Msal, session_id: &str, ta
     }
 }
 
-pub async fn run(api: XCloudApi, msal: Arc<Msal>, target: &str, opts: SessionOptions) -> Result<()> {
-    eprintln!("Starting {} stream for {target}...", api.kind().as_str());
-    let play = api.start_stream(target).await?;
-    let session_id = play.id();
-    tracing::info!("session {session_id} ({})", play.session_path);
-
-    let result = run_session(&api, &msal, &session_id, target, &opts).await;
-
-    if opts.stop_on_exit {
-        if let Err(e) = api.stop_stream(&session_id).await {
-            tracing::debug!("stopping session: {e:#}");
+/// Runs a stream session until it ends, the server disconnects, or a
+/// [`SessionCommand::Disconnect`] arrives. Always emits a final
+/// [`SessionEvent::Ended`].
+pub async fn run(
+    api: XCloudApi,
+    msal: Arc<Msal>,
+    target: &str,
+    opts: SessionOptions,
+    events: EventSender,
+    mut commands: mpsc::UnboundedReceiver<SessionCommand>,
+) -> Result<()> {
+    emit(&events, SessionEvent::Status(format!("Starting {} stream...", api.kind().as_str())));
+    let result = async {
+        let play = api.start_stream(target).await?;
+        let session_id = play.id();
+        tracing::info!("session {session_id} ({})", play.session_path);
+        let r = run_session(&api, &msal, &session_id, target, &opts, &events, &mut commands).await;
+        if opts.stop_on_exit {
+            if let Err(e) = api.stop_stream(&session_id).await {
+                tracing::debug!("stopping session: {e:#}");
+            }
         }
+        r
     }
+    .await;
+    emit(&events, SessionEvent::Ended { error: result.as_ref().err().map(|e| format!("{e:#}")) });
     result
 }
 
@@ -108,12 +188,20 @@ async fn run_session(
     session_id: &str,
     target: &str,
     opts: &SessionOptions,
+    events: &EventSender,
+    commands: &mut mpsc::UnboundedReceiver<SessionCommand>,
 ) -> Result<()> {
-    tokio::select! {
-        r = wait_provisioned(api, msal, session_id, target) => r?,
-        _ = tokio::signal::ctrl_c() => bail!("interrupted"),
+    emit(events, SessionEvent::Status("Waiting for the console...".into()));
+    loop {
+        tokio::select! {
+            r = wait_provisioned(api, msal, session_id, target, events) => { r?; break; }
+            cmd = commands.recv() => match cmd {
+                Some(SessionCommand::Disconnect) | None => bail!("cancelled"),
+                Some(_) => continue,
+            },
+        }
     }
-    eprintln!("Session provisioned, negotiating WebRTC...");
+    emit(events, SessionEvent::Status("Connecting...".into()));
 
     // Like the web client: fetch the session configuration before the SDP
     // exchange. Use its STUN server unless one was given explicitly.
@@ -133,7 +221,7 @@ async fn run_session(
         Err(e) => tracing::warn!("fetching session configuration: {e:#}"),
     }
 
-    let (tx, mut events) = mpsc::unbounded_channel();
+    let (tx, mut player_events) = mpsc::unbounded_channel();
     let player = Player::new(player_config, tx)?;
 
     let offer = player.create_offer().await?;
@@ -170,6 +258,8 @@ async fn run_session(
     let mut last_keyframe = Instant::now();
     let mut stats_every = tokio::time::interval(Duration::from_secs(1));
     let mut show_stats = false;
+    // Release time of an overlay-injected Nexus tap.
+    let mut nexus_release: Option<Instant> = None;
     let mut connected = false;
     let mut last_bytes = 0u64;
     let mut last_frames = 0u64;
@@ -180,6 +270,10 @@ async fn run_session(
     loop {
         tokio::select! {
             _ = tick.tick() => {
+                if nexus_release.is_some_and(|t| Instant::now() >= t) {
+                    input.set_overlay(GamepadFrame::default());
+                    nexus_release = None;
+                }
                 if let Some(out) = protocol.tick(input.snapshot(), now_ms(), 33.0) {
                     player.send(&out);
                 }
@@ -198,23 +292,35 @@ async fn run_session(
             _ = stats_every.tick(), if show_stats => {
                 let bytes = player.stats.video_bytes.load(Ordering::Relaxed);
                 let frames = player.stats.video_frames.load(Ordering::Relaxed);
-                eprintln!(
-                    "[stats] video {:.2} Mbit/s, {} fps, server size {:?}",
-                    (bytes - last_bytes) as f64 * 8.0 / 1_000_000.0,
-                    frames - last_frames,
-                    protocol.server_video_size
-                );
+                let mut stats = player.webrtc_stats().await;
+                stats.video_mbps = (bytes - last_bytes) as f64 * 8.0 / 1_000_000.0;
+                stats.fps = frames - last_frames;
+                stats.video_size = protocol.server_video_size;
+                stats.jitter_buffer_ms = opts.player.latency_ms;
                 last_bytes = bytes;
                 last_frames = frames;
+                emit(events, SessionEvent::Stats(stats));
             }
+            cmd = commands.recv() => match cmd {
+                None | Some(SessionCommand::Disconnect) => break,
+                Some(SessionCommand::PressNexus) => {
+                    let mut f = GamepadFrame::default();
+                    f.set_button(buttons::NEXUS, true);
+                    input.set_overlay(f);
+                    nexus_release = Some(Instant::now() + Duration::from_millis(150));
+                }
+                Some(SessionCommand::Key { name, pressed }) => apply_key(&input, &name, pressed),
+                Some(SessionCommand::RequestKeyframe) => player.send(&Protocol::keyframe_request(true)),
+                Some(SessionCommand::SetStats(on)) => {
+                    show_stats = on;
+                    last_bytes = player.stats.video_bytes.load(Ordering::Relaxed);
+                    last_frames = player.stats.video_frames.load(Ordering::Relaxed);
+                }
+            },
             _ = &mut connect_deadline, if !connected => {
                 bail!("WebRTC connection was not established within {connect_secs} seconds");
             }
-            _ = tokio::signal::ctrl_c() => {
-                eprintln!("Stopping stream...");
-                break;
-            }
-            ev = events.recv() => {
+            ev = player_events.recv() => {
                 let Some(ev) = ev else { break };
                 match ev {
                     PlayerEvent::ChannelOpen(kind) => {
@@ -225,8 +331,7 @@ async fn run_session(
                     PlayerEvent::ChannelClosed(kind) => {
                         tracing::info!("data channel `{}` closed", kind.label());
                         if kind == crate::channels::ChannelKind::Input && connected {
-                            eprintln!("Stream closed by the server.");
-                            break;
+                            bail!("stream closed by the server");
                         }
                     }
                     PlayerEvent::ChannelMessage(kind, data) => {
@@ -236,15 +341,23 @@ async fn run_session(
                         }
                         for e in evs {
                             match e {
-                                ProtocolEvent::HandshakeCompleted => eprintln!("Stream started. Press ~ for stats, F12 to quit."),
+                                ProtocolEvent::HandshakeCompleted => emit(events, SessionEvent::StreamStarted),
                                 ProtocolEvent::Vibration(v) => rumble.send(v),
                                 ProtocolEvent::ServerVideoSize { width, height } => {
                                     tracing::info!("server video size {width}x{height}");
+                                    emit(events, SessionEvent::VideoSize { width, height });
                                 }
-                                ProtocolEvent::TitleInfo(info) => tracing::info!("title info: {info}"),
-                                ProtocolEvent::Dialog { title, text } => eprintln!("[console] {title}: {text}"),
+                                ProtocolEvent::TitleInfo(info) => {
+                                    tracing::info!("title info: {info}");
+                                    if let Some(id) = info.get("titleaumid").and_then(|v| v.as_str()) {
+                                        let name = id.rsplit('!').next().unwrap_or(id).to_string();
+                                        emit(events, SessionEvent::Title(name));
+                                    }
+                                }
+                                ProtocolEvent::Dialog { title, text } => emit(events, SessionEvent::Dialog { title, text }),
                                 ProtocolEvent::ServerDisconnect => {
-                                    eprintln!("Server ended the session.");
+                                    tracing::info!("server ended the session");
+                                    player.stop();
                                     return Ok(());
                                 }
                             }
@@ -255,7 +368,7 @@ async fn run_session(
                         match state {
                             WebRTCPeerConnectionState::Connected => {
                                 if !connected {
-                                    eprintln!("Connected.");
+                                    emit(events, SessionEvent::Connected);
                                 }
                                 connected = true;
                             }
@@ -279,7 +392,11 @@ async fn run_session(
                     PlayerEvent::KeyPress(key) => {
                         if let Some(action) = keyboard::client_action(&key) {
                             match action {
-                                ClientAction::ToggleStats => show_stats = !show_stats,
+                                ClientAction::ToggleStats => {
+                                    show_stats = !show_stats;
+                                    last_bytes = player.stats.video_bytes.load(Ordering::Relaxed);
+                                    last_frames = player.stats.video_frames.load(Ordering::Relaxed);
+                                }
                                 ClientAction::RequestKeyframe => player.send(&Protocol::keyframe_request(true)),
                                 ClientAction::Quit => break,
                             }
@@ -288,10 +405,7 @@ async fn run_session(
                         }
                     }
                     PlayerEvent::KeyRelease(key) => apply_key(&input, &key, false),
-                    PlayerEvent::Closed => {
-                        eprintln!("Window closed.");
-                        break;
-                    }
+                    PlayerEvent::Closed => break,
                     PlayerEvent::Error(e) => return Err(anyhow!("player error: {e}")),
                 }
             }
