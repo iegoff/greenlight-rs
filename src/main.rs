@@ -1,15 +1,13 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 
 use greenlight::api::catalog;
-use greenlight::api::webapi::WebApi;
-use greenlight::api::xcloud::{StreamKind, XCloudApi};
-use greenlight::auth::{Msal, StreamingToken, TokenStore};
+use greenlight::api::xcloud::XCloudApi;
+use greenlight::app::App;
+use greenlight::auth::Msal;
 use greenlight::channels::ClientConfig;
-use greenlight::config::{self, Settings};
-use greenlight::http::Http;
 use greenlight::player::{H264Profile, PlayerConfig};
 use greenlight::session::{self, SessionOptions};
 
@@ -24,8 +22,9 @@ struct Cli {
     #[arg(long, global = true, env = "GREENLIGHT_LOCALE")]
     locale: Option<String>,
 
+    /// Without a command, the graphical interface starts.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -179,50 +178,6 @@ impl StreamArgs {
     }
 }
 
-struct App {
-    http: Http,
-    msal: Arc<Msal>,
-    locale: String,
-}
-
-impl App {
-    async fn require_login(&self) -> Result<()> {
-        if !self.msal.has_user_token().await {
-            return Err(anyhow!("not signed in, run `greenlight login` first"));
-        }
-        Ok(())
-    }
-
-    async fn web(&self) -> Result<WebApi> {
-        self.require_login().await?;
-        Ok(WebApi::new(self.http.clone(), &self.msal.web_token().await?))
-    }
-
-    async fn home_api(&self) -> Result<XCloudApi> {
-        self.require_login().await?;
-        let tokens = self.msal.streaming_tokens().await?;
-        api_for(&self.http, &tokens.xhome, None, StreamKind::Home, &self.locale)
-    }
-
-    async fn cloud_api(&self, region: Option<&str>) -> Result<(XCloudApi, StreamingToken)> {
-        self.require_login().await?;
-        let tokens = self.msal.streaming_tokens().await?;
-        let token = tokens
-            .xcloud
-            .ok_or_else(|| anyhow!("this account has no xCloud access (Game Pass Ultimate / supported region required)"))?;
-        Ok((api_for(&self.http, &token, region, StreamKind::Cloud, &self.locale)?, token))
-    }
-}
-
-fn api_for(http: &Http, token: &StreamingToken, region: Option<&str>, kind: StreamKind, locale: &str) -> Result<XCloudApi> {
-    let region = match region {
-        Some(name) => token.region(name).ok_or_else(|| anyhow!("unknown region {name}"))?,
-        None => token.default_region().ok_or_else(|| anyhow!("streaming token has no regions"))?,
-    };
-    tracing::info!("using {} region {} ({})", kind.as_str(), region.name, region.base_uri);
-    Ok(XCloudApi::new(http.clone(), &region.base_uri, &token.gs_token, kind, locale))
-}
-
 /// Runs a session in the terminal: prints its events, ctrl-c disconnects.
 async fn run_cli_session(api: XCloudApi, msal: Arc<Msal>, target: &str, opts: SessionOptions) -> Result<()> {
     use greenlight::session::{SessionCommand, SessionEvent};
@@ -238,7 +193,7 @@ async fn run_cli_session(api: XCloudApi, msal: Arc<Msal>, target: &str, opts: Se
                 },
                 SessionEvent::Connected => eprintln!("Connected."),
                 SessionEvent::StreamStarted => eprintln!("Stream started. Press ~ for stats, F12 to quit."),
-                SessionEvent::VideoSize { .. } | SessionEvent::Title(_) => {}
+                SessionEvent::VideoSize { .. } | SessionEvent::Title(_) | SessionEvent::OverlayRequested => {}
                 SessionEvent::Dialog { title, text } => eprintln!("[console] {title}: {text}"),
                 SessionEvent::Stats(s) => eprintln!("[stats] {}", greenlight::session::format_stats(&s)),
                 SessionEvent::Ended { .. } => break,
@@ -268,8 +223,7 @@ fn qr_text(data: &str) -> Result<String> {
         .build())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("GREENLIGHT_LOG")
@@ -279,15 +233,33 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let settings = Settings::load().unwrap_or_default();
-    let force_ip = cli.force_region_ip.clone().or(settings.force_region_ip.clone());
-    let locale = cli.locale.clone().or(settings.locale.clone()).unwrap_or_else(|| "en-US".into());
-
-    let http = Http::new(force_ip.as_deref())?;
-    let store = TokenStore::load(config::token_path()?)?;
-    let app = App { http: http.clone(), msal: Arc::new(Msal::new(http.clone(), store)), locale };
-
+    let rt = tokio::runtime::Runtime::new()?;
+    let app = {
+        let _guard = rt.enter();
+        App::new(cli.force_region_ip.clone(), cli.locale.clone())?
+    };
     match cli.command {
+        Some(command) => rt.block_on(run_command(command, app)),
+        None => run_gui(rt, app),
+    }
+}
+
+#[cfg(feature = "gui")]
+fn run_gui(rt: tokio::runtime::Runtime, app: App) -> Result<()> {
+    greenlight::gui::run(rt, app)
+}
+
+#[cfg(not(feature = "gui"))]
+fn run_gui(_rt: tokio::runtime::Runtime, _app: App) -> Result<()> {
+    use clap::CommandFactory;
+    Cli::command().print_help()?;
+    Ok(())
+}
+
+async fn run_command(command: Command, app: App) -> Result<()> {
+    let settings = app.settings.clone();
+    let http = app.http.clone();
+    match command {
         Command::Login { no_qr } => {
             let code = app.msal.start_device_code().await?;
             eprintln!("{}", code.message);
@@ -304,44 +276,9 @@ async fn main() -> Result<()> {
             println!("Signed in as {}", web.gamertag().unwrap_or("<unknown>"));
         }
         Command::ImportGreenlight { from } => {
-            let candidates = match from {
-                Some(p) => vec![p],
-                None => greenlight::auth::greenlight_store_candidates(),
-            };
-            let mut found = None;
-            for path in &candidates {
-                match std::fs::read_to_string(path) {
-                    Ok(contents) => {
-                        found = Some((path.clone(), contents));
-                        break;
-                    }
-                    Err(e) => tracing::debug!("{}: {e}", path.display()),
-                }
-            }
-            let Some((path, contents)) = found else {
-                let list: Vec<String> = candidates.iter().map(|p| format!("  {}", p.display())).collect();
-                return Err(anyhow!(
-                    "no Greenlight settings found. Looked in:\n{}\nUse --from <path to Greenlight's config.json>.",
-                    list.join("\n")
-                ));
-            };
-            eprintln!("Importing sign-in from {}", path.display());
-            let token = greenlight::auth::parse_greenlight_tokens(&contents)?;
-            let previous = app.msal.user_token().await;
-            app.msal.import_user_token(token).await?;
-            match app.msal.web_token().await {
-                Ok(web) => println!("Signed in as {}", web.gamertag().unwrap_or("<unknown>")),
-                Err(e) => {
-                    // Don't leave a broken sign-in behind: restore what we had.
-                    match previous {
-                        Some(prev) => app.msal.import_user_token(prev).await?,
-                        None => app.msal.logout().await?,
-                    }
-                    return Err(e.context(
-                        "the imported sign-in didn't work (your previous sign-in was kept); try `greenlight login`",
-                    ));
-                }
-            }
+            let (path, gamertag) = app.import_greenlight(from).await?;
+            eprintln!("Imported sign-in from {}", path.display());
+            println!("Signed in as {gamertag}");
         }
         Command::Logout => {
             app.msal.logout().await?;

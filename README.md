@@ -59,12 +59,9 @@ python3 flatpak/gen-cargo-sources.py Cargo.lock > flatpak/cargo-sources.json
    ```
    `login` shows a QR code: scan it with your phone, sign in, and enter the code shown on the Deck. If Greenlight is already signed in on the Deck, run `import-greenlight` instead of `login`.
 3. Open Steam → **Games → Add a Non-Steam Game**, tick **Greenlight (Rust)**, and add it.
-4. Open the shortcut's **Properties**. Steam usually pre-fills **Launch options** with the Flatpak arguments (`run ... io.github.iegoff.greenlight_rs`). Keep those and **append** the stream command at the end, for example:
-   ```
-   home F4XXXXXXXXXXXXXX --resolution 1280x720 --fullscreen
-   ```
-   or `cloud <TITLE_ID>` for xCloud.
-5. Launch it from Game Mode. Steam Input exposes the Deck's controls as an Xbox controller. The Steam button opens Steam's menu, so map a back button (e.g. L4) to the keyboard key **N** for the Xbox button.
+4. Launch it from Game Mode. It opens fullscreen on the console list; pick your console with the controller and press A.
+   To skip the list and stream straight away, append a command to the shortcut's **Launch options**, after the Flatpak arguments Steam pre-fills, for example `home F4XXXXXXXXXXXXXX`.
+5. While streaming, hold **View + Menu** for a second to open the overlay menu. Steam Input exposes the Deck's controls as an Xbox controller. The Steam button opens Steam's menu, so map a back button (e.g. L4) to the keyboard key **N** for the Xbox button.
 
 If there's no video, add `--video-sink waylandsink` or `--video-sink glimagesink` to the launch options. For logs, run it from Konsole: `flatpak run --env=GREENLIGHT_LOG=greenlight=debug io.github.iegoff.greenlight_rs home F4XXXXXXXXXXXXXX`.
 
@@ -99,6 +96,23 @@ cargo install --path .
 Run `cargo build --no-default-features` to build without gamepad support (no `libudev` dependency).
 
 ## Usage
+
+### Graphical interface
+
+Run `greenlight` without a command (or start **Greenlight (Rust)** from your app menu or Steam):
+
+- **Sign in:** scan the QR code with your phone and enter the code shown, or import an existing Greenlight sign-in.
+- **Your consoles:** pick a console and press **Stream**.
+- **While streaming:** open the menu with **Esc**/**F1**, a tap or click on the video, or by **holding View + Menu for a second** on the controller. From there:
+  - **Xbox:** press the Xbox (guide) button;
+  - **Stats:** show resolution, frame rate, bitrate, jitter, lost packets and the decoder;
+  - **Fullscreen** (or **F11**);
+  - **Disconnect.**
+- The menus can be driven with a controller: D-pad or left stick to move, A to select, B to go back.
+- Under Steam's Game Mode the window is fullscreen automatically.
+
+### Command line
+
 
 ```bash
 greenlight login                  # device-code sign in (with a QR code)

@@ -31,6 +31,8 @@ pub enum SessionEvent {
     Title(String),
     Dialog { title: String, text: String },
     Stats(StreamStats),
+    /// View + Menu were held for a second: show the overlay menu.
+    OverlayRequested,
     /// The session is over (normally or with an error message).
     Ended { error: Option<String> },
 }
@@ -260,6 +262,9 @@ async fn run_session(
     let mut show_stats = false;
     // Release time of an overlay-injected Nexus tap.
     let mut nexus_release: Option<Instant> = None;
+    // View + Menu hold that opens the overlay.
+    let mut combo_since: Option<Instant> = None;
+    let mut combo_fired = false;
     let mut connected = false;
     let mut last_bytes = 0u64;
     let mut last_frames = 0u64;
@@ -274,7 +279,11 @@ async fn run_session(
                     input.set_overlay(GamepadFrame::default());
                     nexus_release = None;
                 }
-                if let Some(out) = protocol.tick(input.snapshot(), now_ms(), 33.0) {
+                let mut snap = input.snapshot();
+                if overlay_combo(&mut snap, &mut combo_since, &mut combo_fired, Instant::now()) {
+                    emit(events, SessionEvent::OverlayRequested);
+                }
+                if let Some(out) = protocol.tick(snap, now_ms(), 33.0) {
                     player.send(&out);
                 }
                 if let Some(every) = keyframe_every {
@@ -416,6 +425,30 @@ async fn run_session(
     Ok(())
 }
 
+/// Holding View + Menu for a second opens the overlay. While both are held
+/// they are masked out so the combo doesn't reach the console. Returns true
+/// once per hold, when the overlay should open.
+fn overlay_combo(
+    frame: &mut GamepadFrame,
+    since: &mut Option<Instant>,
+    fired: &mut bool,
+    now: Instant,
+) -> bool {
+    let combo = buttons::VIEW | buttons::MENU;
+    if frame.buttons & combo != combo {
+        *since = None;
+        *fired = false;
+        return false;
+    }
+    frame.buttons &= !combo;
+    let start = *since.get_or_insert(now);
+    if !*fired && now.duration_since(start) >= Duration::from_secs(1) {
+        *fired = true;
+        return true;
+    }
+    false
+}
+
 /// The configuration includes an SRTP key; keep it out of logs.
 fn redact_configuration(cfg: &serde_json::Value) -> serde_json::Value {
     let mut c = cfg.clone();
@@ -439,5 +472,36 @@ pub fn kind_from_str(s: &str) -> Result<StreamKind> {
         "home" => Ok(StreamKind::Home),
         "cloud" => Ok(StreamKind::Cloud),
         _ => Err(anyhow!("unknown stream type {s}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn view_menu_hold_opens_overlay_once() {
+        let t0 = Instant::now();
+        let (mut since, mut fired) = (None, false);
+        let mut held = GamepadFrame::default();
+        held.set_button(buttons::VIEW, true);
+        held.set_button(buttons::MENU, true);
+        held.set_button(buttons::A, true);
+
+        let mut f = held;
+        assert!(!overlay_combo(&mut f, &mut since, &mut fired, t0));
+        assert_eq!(f.buttons, buttons::A, "combo buttons must not reach the console");
+        let mut f = held;
+        assert!(!overlay_combo(&mut f, &mut since, &mut fired, t0 + Duration::from_millis(500)));
+        let mut f = held;
+        assert!(overlay_combo(&mut f, &mut since, &mut fired, t0 + Duration::from_millis(1000)));
+        let mut f = held;
+        assert!(!overlay_combo(&mut f, &mut since, &mut fired, t0 + Duration::from_millis(2000)), "fires once per hold");
+
+        // View alone passes through untouched.
+        let mut f = GamepadFrame::default();
+        f.set_button(buttons::VIEW, true);
+        assert!(!overlay_combo(&mut f, &mut since, &mut fired, t0 + Duration::from_millis(2100)));
+        assert_eq!(f.buttons, buttons::VIEW);
     }
 }

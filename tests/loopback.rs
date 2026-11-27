@@ -170,7 +170,8 @@ async fn negotiates_streams_and_channels_with_fake_console() {
 
     let (tx, mut events) = mpsc::unbounded_channel();
     let config = PlayerConfig {
-        video_sink: Some("fakesink sync=false".into()),
+        // Prebuilt sink element, like the GUI's gtk4paintablesink.
+        video_sink_element: Some(gst::ElementFactory::make("fakesink").property("sync", false).build().unwrap()),
         audio_sink: Some("fakesink sync=false".into()),
         ..Default::default()
     };

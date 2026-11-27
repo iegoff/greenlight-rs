@@ -10,9 +10,11 @@ keywords = ["xbox", "xcloud", "streaming", "webrtc", "gstreamer"]
 categories = ["games", "multimedia"]
 
 [features]
-default = ["gamepad"]
+default = ["gamepad", "gui"]
 # Physical gamepad support (and rumble) through gilrs.
 gamepad = ["dep:gilrs"]
+# GTK4/libadwaita user interface (console picker, stream page with overlay).
+gui = ["dep:gtk", "dep:adw", "dep:gst-plugin-gtk4"]
 
 [dependencies]
 anyhow = "1"
@@ -39,6 +41,9 @@ gst-video = { package = "gstreamer-video", version = "0.23", features = ["v1_22"
 glib = "0.20"
 
 gilrs = { version = "0.11", optional = true }
+gtk = { package = "gtk4", version = "0.9", features = ["v4_14"], optional = true }
+adw = { package = "libadwaita", version = "0.7", features = ["v1_5"], optional = true }
+gst-plugin-gtk4 = { version = "0.13", features = ["dmabuf", "wayland", "x11egl", "gtk_v4_14"], optional = true }
 
 [dev-dependencies]
 pretty_assertions = "1"

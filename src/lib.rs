@@ -3,9 +3,12 @@
 //! [Greenlight](https://github.com/unknownskl/greenlight).
 
 pub mod api;
+pub mod app;
 pub mod auth;
 pub mod channels;
 pub mod config;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod http;
 pub mod input;
 pub mod player;
