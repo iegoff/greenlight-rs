@@ -57,6 +57,7 @@ python3 flatpak/gen-cargo-sources.py Cargo.lock > flatpak/cargo-sources.json
    flatpak run io.github.iegoff.greenlight_rs login
    flatpak run io.github.iegoff.greenlight_rs consoles
    ```
+   `login` shows a QR code: scan it with your phone, sign in, and enter the code shown on the Deck. If Greenlight is already signed in on the Deck, run `import-greenlight` instead of `login`.
 3. Open Steam → **Games → Add a Non-Steam Game**, tick **Greenlight (Rust)**, and add it.
 4. Open the shortcut's **Properties**. Steam usually pre-fills **Launch options** with the Flatpak arguments (`run ... io.github.iegoff.greenlight_rs`). Keep those and **append** the stream command at the end, for example:
    ```
@@ -100,12 +101,24 @@ Run `cargo build --no-default-features` to build without gamepad support (no `li
 ## Usage
 
 ```bash
-greenlight login                  # device-code sign in
+greenlight login                  # device-code sign in (with a QR code)
 greenlight consoles               # list consoles (id, power state, streaming enabled)
 greenlight home F4000000000000000 # stream from a console
 greenlight titles --search halo   # list xCloud titles
 greenlight cloud <TITLE_ID>       # stream an xCloud title
 ```
+
+### Signing in
+
+| Command | What it does |
+|---|---|
+| `greenlight login` | Device-code sign in. Shows a URL, a code and a QR code of the URL, so you can sign in from your phone. Add `--no-qr` to hide the QR code. |
+| `greenlight import-greenlight` | Reuses the sign-in of an installed [Greenlight](https://github.com/unknownskl/greenlight) desktop app, native or Flatpak. Use `--from <path>` to point at its `config.json` yourself. Only the sign-in current Greenlight versions use can be imported; tokens from Greenlight's older XAL sign-in can't be reused (Greenlight asks you to sign in again in that case; after that, the import works). If the imported sign-in doesn't work, your previous one is kept. |
+| `greenlight logout` | Removes the stored sign-in. |
+
+Greenlight keeps its own copy of the sign-in after an import. If one of the two apps later reports that you're signed out, sign in to that one again.
+
+The QR code is drawn for a dark terminal. On a light background some phone scanners can't read it; use `--no-qr` and open the URL by hand.
 
 Useful stream options (`greenlight home --help` lists all of them):
 

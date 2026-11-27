@@ -31,7 +31,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Sign in with a Microsoft account (device code flow).
-    Login,
+    Login {
+        /// Don't print a QR code of the login URL.
+        #[arg(long)]
+        no_qr: bool,
+    },
+    /// Reuse the sign-in of an installed Greenlight desktop app (incl. its Flatpak).
+    ImportGreenlight {
+        /// Greenlight `config.json` (or a `tokens.json`); searched automatically if omitted.
+        #[arg(long)]
+        from: Option<std::path::PathBuf>,
+    },
     /// Remove stored credentials.
     Logout,
     /// Show the signed-in profile.
@@ -198,6 +208,17 @@ fn api_for(http: &Http, token: &StreamingToken, region: Option<&str>, kind: Stre
     Ok(XCloudApi::new(http.clone(), &region.base_uri, &token.gs_token, kind, locale))
 }
 
+/// Renders `data` as a QR code using Unicode half blocks (two rows per line).
+fn qr_text(data: &str) -> Result<String> {
+    let code = qrcode::QrCode::new(data.as_bytes())?;
+    Ok(code
+        .render::<qrcode::render::unicode::Dense1x2>()
+        .dark_color(qrcode::render::unicode::Dense1x2::Light)
+        .light_color(qrcode::render::unicode::Dense1x2::Dark)
+        .quiet_zone(true)
+        .build())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -218,13 +239,60 @@ async fn main() -> Result<()> {
     let app = App { http: http.clone(), msal: Arc::new(Msal::new(http.clone(), store)), locale };
 
     match cli.command {
-        Command::Login => {
+        Command::Login { no_qr } => {
             let code = app.msal.start_device_code().await?;
             eprintln!("{}", code.message);
+            let url = code.verification_uri_complete.as_deref().unwrap_or(&code.verification_uri);
+            if !no_qr {
+                match qr_text(url) {
+                    Ok(qr) => eprintln!("\nScan to open the login page:\n{qr}"),
+                    Err(e) => tracing::debug!("QR code: {e}"),
+                }
+            }
             eprintln!("\n  URL:  {}\n  Code: {}\n", code.verification_uri, code.user_code);
             app.msal.poll_device_code(&code).await?;
             let web = app.msal.web_token().await.context("fetching Xbox Live token")?;
             println!("Signed in as {}", web.gamertag().unwrap_or("<unknown>"));
+        }
+        Command::ImportGreenlight { from } => {
+            let candidates = match from {
+                Some(p) => vec![p],
+                None => greenlight::auth::greenlight_store_candidates(),
+            };
+            let mut found = None;
+            for path in &candidates {
+                match std::fs::read_to_string(path) {
+                    Ok(contents) => {
+                        found = Some((path.clone(), contents));
+                        break;
+                    }
+                    Err(e) => tracing::debug!("{}: {e}", path.display()),
+                }
+            }
+            let Some((path, contents)) = found else {
+                let list: Vec<String> = candidates.iter().map(|p| format!("  {}", p.display())).collect();
+                return Err(anyhow!(
+                    "no Greenlight settings found. Looked in:\n{}\nUse --from <path to Greenlight's config.json>.",
+                    list.join("\n")
+                ));
+            };
+            eprintln!("Importing sign-in from {}", path.display());
+            let token = greenlight::auth::parse_greenlight_tokens(&contents)?;
+            let previous = app.msal.user_token().await;
+            app.msal.import_user_token(token).await?;
+            match app.msal.web_token().await {
+                Ok(web) => println!("Signed in as {}", web.gamertag().unwrap_or("<unknown>")),
+                Err(e) => {
+                    // Don't leave a broken sign-in behind: restore what we had.
+                    match previous {
+                        Some(prev) => app.msal.import_user_token(prev).await?,
+                        None => app.msal.logout().await?,
+                    }
+                    return Err(e.context(
+                        "the imported sign-in didn't work (your previous sign-in was kept); try `greenlight login`",
+                    ));
+                }
+            }
         }
         Command::Logout => {
             app.msal.logout().await?;

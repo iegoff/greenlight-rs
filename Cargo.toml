@@ -29,6 +29,7 @@ url = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = "0.3"
+qrcode = { version = "0.14", default-features = false }
 
 gst = { package = "gstreamer", version = "0.23", features = ["v1_22"] }
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.23", features = ["v1_22"] }

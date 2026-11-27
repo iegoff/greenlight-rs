@@ -18,6 +18,10 @@ finish-args:
   # recognise joysticks.
   - --device=all
   - --filesystem=/run/udev:ro
+  # Read-only, for `greenlight import-greenlight`: the Greenlight desktop app's
+  # settings (native install and its Flatpak).
+  - --filesystem=xdg-config/Greenlight:ro
+  - --filesystem=~/.var/app/io.github.unknownskl.greenlight/config/Greenlight:ro
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin

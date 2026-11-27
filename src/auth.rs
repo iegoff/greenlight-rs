@@ -122,11 +122,66 @@ fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, data)
 }
 
+/// Places where the Greenlight desktop app (Electron) keeps its settings.
+/// Paths are built from `$HOME` so they also resolve inside a Flatpak sandbox.
+pub fn greenlight_store_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        out.push(home.join(".config/Greenlight/config.json"));
+        out.push(home.join(".var/app/io.github.unknownskl.greenlight/config/Greenlight/config.json"));
+        out.push(home.join("Library/Application Support/Greenlight/config.json"));
+    }
+    if std::env::var_os("FLATPAK_ID").is_none() {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
+            let p = xdg.join("Greenlight/config.json");
+            if !out.contains(&p) {
+                out.insert(0, p);
+            }
+        }
+    }
+    if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
+        out.push(appdata.join("Greenlight").join("config.json"));
+    }
+    out
+}
+
+/// Extracts the user token from a Greenlight settings file (`config.json`,
+/// where `user.tokenstore` holds the xal-node token store as a JSON string)
+/// or from a plain xal-node / greenlight-rs `tokens.json`.
+pub fn parse_greenlight_tokens(contents: &str) -> Result<UserToken> {
+    let v: Value = serde_json::from_str(contents).context("not a JSON file")?;
+    let store: Value = match v.pointer("/user/tokenstore") {
+        Some(Value::String(s)) => serde_json::from_str(s).context("parsing user.tokenstore")?,
+        Some(obj @ Value::Object(_)) => obj.clone(),
+        _ if v.get("userToken").is_some() => v,
+        _ => bail!("no Greenlight sign-in found in this file (is Greenlight signed in?)"),
+    };
+    let token = store
+        .get("userToken")
+        .cloned()
+        .ok_or_else(|| anyhow!("Greenlight has no stored user token; sign in to Greenlight first"))?;
+    let token: UserToken = serde_json::from_value(token).context("unexpected user token format")?;
+    if !token.scope.to_ascii_lowercase().contains("xboxlive.signin") {
+        bail!(
+            "Greenlight's token uses the old XAL sign-in (scope `{}`), which can't be reused. \
+             Sign in to Greenlight again (it replaces the old sign-in), or use `greenlight login`.",
+            token.scope
+        );
+    }
+    if token.refresh_token.is_empty() {
+        bail!("Greenlight's token has no refresh token");
+    }
+    Ok(token)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceCodeResponse {
     pub user_code: String,
     pub device_code: String,
     pub verification_uri: String,
+    /// Login URL with the code pre-filled, if the server provides one.
+    #[serde(default)]
+    pub verification_uri_complete: Option<String>,
     pub expires_in: u64,
     #[serde(default = "default_interval")]
     pub interval: u64,
@@ -247,8 +302,26 @@ impl Msal {
         Self { http, store: Mutex::new(store), xsts: Mutex::new(None), gssv: Mutex::new(None) }
     }
 
+    pub async fn user_token(&self) -> Option<UserToken> {
+        self.store.lock().await.user_token.clone()
+    }
+
     pub async fn has_user_token(&self) -> bool {
         self.store.lock().await.user_token.is_some()
+    }
+
+    /// Stores a user token obtained elsewhere (e.g. imported from Greenlight).
+    /// `expires_on` is kept as-is; an expired token is refreshed on first use.
+    pub async fn import_user_token(&self, token: UserToken) -> Result<()> {
+        let mut store = self.store.lock().await;
+        store.sisu_token = None;
+        store.jwt_keys = None;
+        store.user_token = Some(token);
+        store.save()?;
+        drop(store);
+        *self.xsts.lock().await = None;
+        *self.gssv.lock().await = None;
+        Ok(())
     }
 
     pub async fn logout(&self) -> Result<()> {
@@ -549,6 +622,33 @@ mod tests {
         assert_eq!(t.default_region().unwrap().name, "UkSouth");
         assert_eq!(t.region("westeurope").unwrap().base_uri, "https://weu.core.gssv-play-prod.xboxlive.com");
         assert!(t.seconds_valid() > 14000);
+    }
+
+    #[test]
+    fn imports_greenlight_electron_store() {
+        let inner = json!({
+            "userToken": {
+                "token_type": "bearer", "expires_in": 3600, "scope": "XboxLive.signin",
+                "access_token": "at", "refresh_token": "rt",
+                "expires_on": "2026-01-01T00:00:00.000Z"
+            }
+        });
+        let config = json!({ "user": { "tokenstore": inner.to_string(), "gamertag": "G" } });
+        let t = parse_greenlight_tokens(&config.to_string()).unwrap();
+        assert_eq!(t.refresh_token, "rt");
+        assert!(!t.is_valid()); // expired tokens are refreshed on first use
+
+        // plain tokens.json works too
+        assert_eq!(parse_greenlight_tokens(&inner.to_string()).unwrap().access_token, "at");
+
+        // old XAL tokens are rejected with a clear message
+        let mut old = inner.clone();
+        old["userToken"]["scope"] = json!("service::user.auth.xboxlive.com::MBI_SSL");
+        let err = parse_greenlight_tokens(&old.to_string()).unwrap_err().to_string();
+        assert!(err.contains("old XAL"), "{err}");
+
+        // signed-out Greenlight
+        assert!(parse_greenlight_tokens(r#"{"user":{"gamertag":"x"}}"#).is_err());
     }
 
     #[test]
