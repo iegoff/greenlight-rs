@@ -69,6 +69,7 @@ impl FakeConsole {
                     sdp_m_line_index: Some(mline),
                     sdp_mid: Some(mline.to_string()),
                     message_type: Some("iceCandidate".into()),
+                    username_fragment: None,
                 });
                 None
             });

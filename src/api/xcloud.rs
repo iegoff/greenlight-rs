@@ -220,7 +220,7 @@ impl XCloudApi {
         let body = json!({
             "messageType": "offer",
             "sdp": sdp,
-            "requestId": "1",
+            "requestId": 1,
             "configuration": {
                 "chatConfiguration": {
                     "bytesPerSample": 2,
@@ -230,11 +230,13 @@ impl XCloudApi {
                     "sampleFrequencyHz": 24000,
                 },
                 "chat": { "minVersion": 1, "maxVersion": 1 },
+                "chatStream": { "minVersion": 1, "maxVersion": 1 },
                 "control": { "minVersion": 1, "maxVersion": 3 },
                 "input": { "minVersion": 1, "maxVersion": 9 },
                 "message": { "minVersion": 1, "maxVersion": 1 },
                 "reliableinput": { "minVersion": 9, "maxVersion": 9 },
                 "unreliableinput": { "minVersion": 9, "maxVersion": 9 },
+                "isDataChannelOnly": false,
             },
         });
         let path = self.session(session_id, "/sdp");
@@ -256,7 +258,7 @@ impl XCloudApi {
 
     /// Sends local ICE candidates and returns the remote ones.
     pub async fn exchange_ice(&self, session_id: &str, candidates: &[IceCandidate]) -> Result<Vec<IceCandidate>> {
-        let body = json!({ "messageType": "iceCandidate", "candidate": candidates });
+        let body = ice_post_body(candidates);
         let path = self.session(session_id, "/ice");
         self.post(&path, &body, &[]).await.context("posting ICE candidates")?;
         let resp: ExchangeResponse =
@@ -264,6 +266,30 @@ impl XCloudApi {
         let exchange = resp.exchange_response.ok_or_else(|| anyhow!("ICE exchange returned no candidates"))?;
         serde_json::from_str(&exchange).context("parsing remote ICE candidates")
     }
+}
+
+/// Body for `POST .../ice`, in the format the Xbox web client (xbox.com) uses:
+/// `{"candidates": ["<candidate as JSON string>", ..., "a=end-of-candidates"]}`.
+/// Each entry is a JSON-*encoded string* of `RTCIceCandidate.toJSON()`.
+/// (The older `{"messageType": "iceCandidate", "candidate": [...]}` shape used by
+/// Greenlight is accepted by the server but never reaches the console.)
+pub fn ice_post_body(candidates: &[IceCandidate]) -> Value {
+    let mut list: Vec<Value> = candidates
+        .iter()
+        .filter(|c| !c.is_end_of_candidates())
+        .map(|c| {
+            let mut o = serde_json::Map::new();
+            o.insert("candidate".into(), json!(c.bare_candidate()));
+            o.insert("sdpMid".into(), json!(c.sdp_mid.clone().unwrap_or_else(|| c.sdp_m_line_index.unwrap_or(0).to_string())));
+            o.insert("sdpMLineIndex".into(), json!(c.sdp_m_line_index.unwrap_or(0)));
+            if let Some(u) = &c.username_fragment {
+                o.insert("usernameFragment".into(), json!(u));
+            }
+            Value::String(Value::Object(o).to_string())
+        })
+        .collect();
+    list.push(json!("a=end-of-candidates"));
+    json!({ "candidates": list })
 }
 
 fn timezone_offset_minutes() -> i32 {
@@ -308,6 +334,27 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(p.id(), "ABCDEF-123");
+    }
+
+    #[test]
+    fn ice_body_matches_web_client() {
+        let c = IceCandidate {
+            candidate: "candidate:1 1 UDP 2015363327 192.168.178.49 57684 typ host".into(),
+            sdp_m_line_index: Some(0),
+            sdp_mid: Some("0".into()),
+            message_type: None,
+            username_fragment: Some("eSGS".into()),
+        };
+        let body = ice_post_body(&[c]);
+        let list = body["candidates"].as_array().unwrap();
+        assert_eq!(list.len(), 2);
+        let first: Value = serde_json::from_str(list[0].as_str().unwrap()).unwrap();
+        assert_eq!(first["candidate"], "candidate:1 1 UDP 2015363327 192.168.178.49 57684 typ host");
+        assert_eq!(first["sdpMid"], "0");
+        assert_eq!(first["sdpMLineIndex"], 0);
+        assert_eq!(first["usernameFragment"], "eSGS");
+        assert_eq!(list[1], "a=end-of-candidates");
+        assert!(body.get("messageType").is_none());
     }
 
     #[test]

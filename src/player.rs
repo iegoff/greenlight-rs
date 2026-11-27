@@ -119,6 +119,8 @@ pub struct Player {
     gathering: watch::Receiver<WebRTCICEGatheringState>,
     /// `(webrtcbin mid, browser-style mid)` for each m-line of the local offer.
     mid_map: Mutex<Vec<(String, String)>>,
+    /// ICE ufrag of the local offer.
+    local_ufrag: Mutex<Option<String>>,
     pub stats: Arc<Stats>,
 }
 
@@ -222,6 +224,7 @@ impl Player {
                         sdp_m_line_index: Some(mline),
                         sdp_mid: Some(mline.to_string()),
                         message_type: None,
+                        username_fragment: None,
                     });
                 }
                 None
@@ -303,7 +306,7 @@ impl Player {
             channels.lock().unwrap().insert(kind, dc);
         }
 
-        Ok(Self { pipeline, webrtc, config, channels, candidates, gathering, mid_map: Mutex::new(Vec::new()), stats })
+        Ok(Self { pipeline, webrtc, config, channels, candidates, gathering, mid_map: Mutex::new(Vec::new()), local_ufrag: Mutex::new(None), stats })
     }
 
     /// Creates the SDP offer, applies Greenlight's tweaks and sets it as local
@@ -320,6 +323,7 @@ impl Player {
         // Browser-style ICE credentials (4-char ufrag), like the Xbox web client.
         let (ufrag, pwd) = sdp::random_ice_credentials();
         let munged = sdp::set_ice_credentials(&munged, &ufrag, &pwd);
+        *self.local_ufrag.lock().unwrap() = Some(ufrag);
         let msg = gst_sdp::SDPMessage::parse_buffer(munged.as_bytes()).context("re-parsing munged SDP")?;
         let desc = WebRTCSessionDescription::new(WebRTCSDPType::Offer, msg);
 
@@ -357,8 +361,10 @@ impl Player {
         // Browser-style mid for each candidate: the m-line index ("0", "1", ...),
         // matching the mids in the offer the console received.
         let map = self.mid_map.lock().unwrap().clone();
+        let ufrag = self.local_ufrag.lock().unwrap().clone();
         let mut candidates = self.candidates.lock().unwrap().clone();
         for c in &mut candidates {
+            c.username_fragment = ufrag.clone();
             if let Some((_, wire)) = c.sdp_m_line_index.and_then(|i| map.get(i as usize)) {
                 c.sdp_mid = Some(wire.clone());
             }

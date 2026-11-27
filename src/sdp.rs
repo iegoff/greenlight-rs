@@ -125,6 +125,10 @@ pub struct IceCandidate {
     pub sdp_mid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_type: Option<String>,
+    /// ICE ufrag of the candidate's generation (browsers send it; the Xbox web
+    /// client includes it when posting local candidates).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username_fragment: Option<String>,
 }
 
 fn de_string_or_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
@@ -173,6 +177,7 @@ pub fn expand_remote_candidates(candidates: &[IceCandidate]) -> Vec<IceCandidate
                     sdp_m_line_index: c.sdp_m_line_index,
                     sdp_mid: c.sdp_mid.clone(),
                     message_type: None,
+                    username_fragment: None,
                 });
             }
         }
