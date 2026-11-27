@@ -130,7 +130,7 @@ Useful stream options (`greenlight home --help` lists all of them):
 | `--video-sink "glimagesink"` | Any GStreamer sink description, e.g. `waylandsink fullscreen=true` |
 | `--low-latency` | Render immediately (no A/V sync) |
 | `--latency <ms>` | Jitter-buffer size (default 100) |
-| `--stun stun://host:port` | STUN server for ICE |
+| `--stun stun://host:port` | STUN server for ICE. Defaults to Microsoft's (`relay.communication.microsoft.com:3478`), as xbox.com uses; `none` disables it |
 | `--no-gamepad`, `--no-rumble`, `--deadzone 0.1` | Input tweaks |
 | `--keep-session` | Don't stop the remote session on exit |
 

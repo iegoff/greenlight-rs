@@ -111,9 +111,9 @@ struct StreamArgs {
     /// Custom GStreamer audio sink, e.g. "pulsesink".
     #[arg(long)]
     audio_sink: Option<String>,
-    /// STUN server, e.g. stun://stun.l.google.com:19302
-    #[arg(long)]
-    stun: Option<String>,
+    /// STUN server (the Xbox web client's by default); "none" to disable.
+    #[arg(long, default_value = "stun://relay.communication.microsoft.com:3478")]
+    stun: String,
     /// How long ICE keeps trying each connection path, in seconds.
     #[arg(long, default_value_t = 30)]
     ice_timeout: u32,
@@ -150,7 +150,8 @@ impl StreamArgs {
                 stereo: !self.mono,
                 video_kbps: self.video_bitrate,
                 audio_kbps: self.audio_bitrate,
-                stun_server: self.stun.clone(),
+                stun_server: (!self.stun.eq_ignore_ascii_case("none") && !self.stun.is_empty())
+                    .then(|| self.stun.clone()),
                 ice_check_secs: self.ice_timeout,
                 latency_ms: self.latency,
                 video_sink: self.video_sink.clone(),
