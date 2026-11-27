@@ -88,6 +88,7 @@ pub struct XCloudApi {
     token: String,
     kind: StreamKind,
     locale: String,
+    display: (u32, u32),
 }
 
 impl XCloudApi {
@@ -99,7 +100,13 @@ impl XCloudApi {
             token: token.to_string(),
             kind,
             locale: locale.to_string(),
+            display: (1920, 1080),
         }
+    }
+
+    /// Display size reported to the server in the device info.
+    pub fn set_display(&mut self, width: u32, height: u32) {
+        self.display = (width, height);
     }
 
     pub fn kind(&self) -> StreamKind {
@@ -188,7 +195,7 @@ impl XCloudApi {
             .post(
                 &format!("v5/sessions/{}/play", self.kind.as_str()),
                 &body,
-                &[("X-MS-Device-Info", device_info())],
+                &[("X-MS-Device-Info", device_info(self.display.0, self.display.1))],
             )
             .await
             .context("starting stream session")?;
@@ -308,7 +315,7 @@ fn timezone_offset_minutes() -> i32 {
 /// Device description sent with `/play`. Mirrors the xbox.com web client
 /// (play.xbox.com in Edge on Linux), which is the signalling flavour this
 /// client implements.
-pub fn device_info() -> String {
+pub fn device_info(width: u32, height: u32) -> String {
     json!({
         "appInfo": {
             "env": {
@@ -321,7 +328,7 @@ pub fn device_info() -> String {
         },
         "dev": {
             "displayInfo": {
-                "dimensions": { "heightInPixels": 1080, "widthInPixels": 1920 },
+                "dimensions": { "heightInPixels": height, "widthInPixels": width },
                 "pixelDensity": { "dpiX": 1, "dpiY": 1 },
             },
             "browser": { "browserName": "edge", "browserVersion": "158.0.4370.45" },

@@ -61,7 +61,7 @@ python3 flatpak/gen-cargo-sources.py Cargo.lock > flatpak/cargo-sources.json
 3. Open Steam → **Games → Add a Non-Steam Game**, tick **Greenlight (Rust)**, and add it.
 4. Open the shortcut's **Properties**. Steam usually pre-fills **Launch options** with the Flatpak arguments (`run ... io.github.iegoff.greenlight_rs`). Keep those and **append** the stream command at the end, for example:
    ```
-   home F4XXXXXXXXXXXXXX --resolution 1280x800 --low-latency
+   home F4XXXXXXXXXXXXXX --resolution 1280x720 --fullscreen
    ```
    or `cloud <TITLE_ID>` for xCloud.
 5. Launch it from Game Mode. Steam Input exposes the Deck's controls as an Xbox controller. The Steam button opens Steam's menu, so map a back button (e.g. L4) to the keyboard key **N** for the Xbox button.
@@ -126,9 +126,11 @@ Useful stream options (`greenlight home --help` lists all of them):
 |---|---|
 | `--profiles high,medium,low` | H.264 profile preference order |
 | `--video-bitrate <kbps>` / `--audio-bitrate <kbps>` | Max bitrate (adds `b=AS:` to the offer) |
-| `--resolution 1280x720` | Dimensions reported to the server |
+| `--resolution 1280x720` | Dimensions reported to the server. Lower values reduce bandwidth and lag over the internet |
 | `--video-sink "glimagesink"` | Any GStreamer sink description, e.g. `waylandsink fullscreen=true` |
-| `--low-latency` | Render immediately (no A/V sync) |
+| `--fullscreen` | Fullscreen window where the sink supports it (e.g. `waylandsink`); Steam Game Mode is always fullscreen |
+| `--video-sync` | Sync video to the clock (smoother, more latency). By default frames are shown as soon as they're decoded |
+| `--low-latency` | Also play audio without clock sync |
 | `--latency <ms>` | Jitter-buffer size (default 100) |
 | `--stun stun://host:port` | STUN server for ICE. Defaults to Microsoft's (`relay.communication.microsoft.com:3478`), as xbox.com uses; `none` disables it |
 | `--no-gamepad`, `--no-rumble`, `--deadzone 0.1` | Input tweaks |

@@ -62,6 +62,13 @@ pub struct PlayerConfig {
     pub audio_sink: Option<String>,
     /// Render frames as soon as they are decoded (no A/V sync).
     pub low_latency: bool,
+    /// Ask the video sink to go fullscreen (sinks with a `fullscreen`
+    /// property, e.g. waylandsink). Gamescope (Steam Game Mode) always
+    /// shows the window fullscreen.
+    pub fullscreen: bool,
+    /// Synchronise video to the clock. Off by default: frames are shown as
+    /// soon as they're decoded, like the web client.
+    pub video_sync: bool,
     pub audio: bool,
     /// How long (roughly, in seconds) ICE keeps sending connectivity checks
     /// on each candidate pair; 0 keeps libnice's default (~2 s).
@@ -86,6 +93,8 @@ impl Default for PlayerConfig {
             audio_sink: None,
             low_latency: false,
             audio: true,
+            fullscreen: false,
+            video_sync: false,
             ice_check_secs: 0,
         }
     }
@@ -291,6 +300,33 @@ impl Player {
                         }
                         MessageView::Warning(w) => tracing::warn!("gstreamer: {}", w.error()),
                         _ => {}
+                    }
+                }
+            });
+        }
+
+        {
+            let fullscreen = config.fullscreen;
+            let video_sync = config.video_sync;
+            pipeline.connect_deep_element_added(move |_, _, el| {
+                let Some(factory) = el.factory() else { return };
+                let klass = factory.metadata(gst::ELEMENT_METADATA_KLASS).unwrap_or_default();
+                if !(klass.contains("Sink") && klass.contains("Video")) || factory.name().starts_with("auto") {
+                    return;
+                }
+                tracing::info!("video sink: {}", factory.name());
+                // autovideosink's real sink: apply the same settings.
+                if !video_sync && el.has_property("sync", None) {
+                    el.set_property("sync", false);
+                }
+                if fullscreen {
+                    if el.has_property("fullscreen", None) {
+                        el.set_property("fullscreen", true);
+                    } else {
+                        tracing::warn!(
+                            "{} can't go fullscreen; try --video-sink waylandsink (in Steam Game Mode the window is fullscreen anyway)",
+                            factory.name()
+                        );
                     }
                 }
             });
@@ -569,7 +605,7 @@ fn on_decoded_pad(
     let chain: Vec<gst::Element> = if name.starts_with("video/") {
         let convert = gst::ElementFactory::make("videoconvert").build()?;
         let sink = make_sink(config.video_sink.as_deref(), "autovideosink")?;
-        if config.low_latency && sink.has_property("sync", None) {
+        if !config.video_sync && sink.has_property("sync", None) {
             sink.set_property("sync", false);
         }
         // Keyboard input from the video window arrives as upstream navigation events.

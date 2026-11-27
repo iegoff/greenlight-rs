@@ -102,9 +102,15 @@ struct StreamArgs {
     /// Jitter buffer latency in ms.
     #[arg(long, default_value_t = 100)]
     latency: u32,
-    /// Render frames as soon as they are decoded (disables A/V sync).
+    /// Also play audio as soon as it arrives (no clock sync at all).
     #[arg(long)]
     low_latency: bool,
+    /// Fullscreen video window (where the sink supports it, e.g. waylandsink).
+    #[arg(long)]
+    fullscreen: bool,
+    /// Sync video frames to the clock (smoother, but adds latency).
+    #[arg(long)]
+    video_sync: bool,
     /// Custom GStreamer video sink, e.g. "glimagesink" or "waylandsink fullscreen=true".
     #[arg(long)]
     video_sink: Option<String>,
@@ -158,6 +164,8 @@ impl StreamArgs {
                 video_sink: self.video_sink.clone(),
                 audio_sink: self.audio_sink.clone(),
                 low_latency: self.low_latency,
+                fullscreen: self.fullscreen,
+                video_sync: self.video_sync,
                 audio: !self.no_audio,
             },
             client: ClientConfig { width: self.resolution.0, height: self.resolution.1, ..Default::default() },
@@ -374,12 +382,14 @@ async fn main() -> Result<()> {
             }
         }
         Command::Home { console_id, stream } => {
-            let api = app.home_api().await?;
+            let mut api = app.home_api().await?;
+            api.set_display(stream.resolution.0, stream.resolution.1);
             session::run(api, app.msal.clone(), &console_id, stream.options()).await?;
         }
         Command::Cloud { title_id, region, stream } => {
             let region = region.or(settings.xcloud_region.clone());
-            let (api, _) = app.cloud_api(region.as_deref()).await?;
+            let (mut api, _) = app.cloud_api(region.as_deref()).await?;
+            api.set_display(stream.resolution.0, stream.resolution.1);
             session::run(api, app.msal.clone(), &title_id, stream.options()).await?;
         }
     }

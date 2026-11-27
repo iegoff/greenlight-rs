@@ -75,6 +75,13 @@ mod imp {
         })
     }
 
+    /// Keyboard/mouse receivers sometimes expose an extra HID interface that
+    /// looks like a joystick (e.g. "... System Control"); ignore those.
+    pub(super) fn looks_like_non_gamepad(name: &str) -> bool {
+        let n = name.to_ascii_lowercase();
+        ["system control", "consumer control", "keyboard", "mouse"].iter().any(|k| n.contains(k))
+    }
+
     fn dz(v: f32, deadzone: f32) -> f32 {
         if v.abs() < deadzone { 0.0 } else { v }
     }
@@ -88,7 +95,11 @@ mod imp {
             }
         };
         for (_id, gp) in gilrs.gamepads() {
-            tracing::info!("gamepad connected: {} (ff: {})", gp.name(), gp.is_ff_supported());
+            if looks_like_non_gamepad(gp.name()) {
+                tracing::info!("ignoring input device: {}", gp.name());
+            } else {
+                tracing::info!("gamepad connected: {} (ff: {})", gp.name(), gp.is_ff_supported());
+            }
         }
 
         let mut frames: HashMap<GamepadId, GamepadFrame> = HashMap::new();
@@ -97,6 +108,9 @@ mod imp {
         loop {
             let mut dirty = false;
             while let Some(ev) = gilrs.next_event() {
+                if looks_like_non_gamepad(gilrs.gamepad(ev.id).name()) {
+                    continue;
+                }
                 let f = frames.entry(ev.id).or_insert_with(|| GamepadFrame::new(0));
                 dirty = true;
                 match ev.event {
@@ -138,7 +152,7 @@ mod imp {
                 effects.clear();
                 let ids: Vec<GamepadId> = gilrs
                     .gamepads()
-                    .filter(|(_, g)| g.is_ff_supported())
+                    .filter(|(_, g)| g.is_ff_supported() && !looks_like_non_gamepad(g.name()))
                     .map(|(id, _)| id)
                     .collect();
                 if ids.is_empty() {
@@ -171,5 +185,16 @@ mod imp {
 
             std::thread::sleep(Duration::from_millis(4));
         }
+    }
+}
+
+#[cfg(all(test, feature = "gamepad"))]
+mod tests {
+    #[test]
+    fn filters_keyboard_receivers() {
+        assert!(super::imp::looks_like_non_gamepad("NuPhy Air75 V3 Dongle System Control"));
+        assert!(super::imp::looks_like_non_gamepad("Logitech USB Receiver Keyboard"));
+        assert!(!super::imp::looks_like_non_gamepad("Steam Virtual Gamepad"));
+        assert!(!super::imp::looks_like_non_gamepad("Xbox Wireless Controller"));
     }
 }
