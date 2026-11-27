@@ -175,6 +175,14 @@ async fn negotiates_streams_and_channels_with_fake_console() {
     };
     let player = Player::new(config, tx).unwrap();
 
+    // The longer ICE check window must reach webrtcbin's libnice agent.
+    let agent = player
+        .webrtcbin()
+        .property::<glib::Object>("ice-agent")
+        .property::<glib::Object>("agent");
+    assert_eq!(agent.property::<u32>("stun-max-retransmissions"), 8);
+    assert_eq!(agent.property::<u32>("stun-initial-timeout"), 200);
+
     let offer = player.create_offer().await.unwrap();
     assert!(offer.contains("m=audio"), "{offer}");
     assert!(offer.contains("m=video"), "{offer}");

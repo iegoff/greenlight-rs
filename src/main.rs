@@ -114,6 +114,9 @@ struct StreamArgs {
     /// STUN server, e.g. stun://stun.l.google.com:19302
     #[arg(long)]
     stun: Option<String>,
+    /// How long ICE keeps trying each connection path, in seconds.
+    #[arg(long, default_value_t = 30)]
+    ice_timeout: u32,
     /// Requested stream resolution reported to the server.
     #[arg(long, default_value = "1920x1080", value_parser = parse_resolution)]
     resolution: (u32, u32),
@@ -148,6 +151,7 @@ impl StreamArgs {
                 video_kbps: self.video_bitrate,
                 audio_kbps: self.audio_bitrate,
                 stun_server: self.stun.clone(),
+                ice_check_secs: self.ice_timeout,
                 latency_ms: self.latency,
                 video_sink: self.video_sink.clone(),
                 audio_sink: self.audio_sink.clone(),

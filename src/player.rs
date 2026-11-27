@@ -63,6 +63,11 @@ pub struct PlayerConfig {
     /// Render frames as soon as they are decoded (no A/V sync).
     pub low_latency: bool,
     pub audio: bool,
+    /// How long (roughly, in seconds) ICE keeps sending connectivity checks
+    /// on each candidate pair before giving up. libnice's default is ~2 s;
+    /// browsers keep trying for ~30 s, which matters when the console's
+    /// checks (which open its NAT) start a few seconds after ours.
+    pub ice_check_secs: u32,
 }
 
 impl Default for PlayerConfig {
@@ -78,6 +83,7 @@ impl Default for PlayerConfig {
             audio_sink: None,
             low_latency: false,
             audio: true,
+            ice_check_secs: 30,
         }
     }
 }
@@ -155,6 +161,7 @@ impl Player {
         if let Some(stun) = &config.stun_server {
             webrtc.set_property("stun-server", stun);
         }
+        configure_ice_timing(&webrtc, config.ice_check_secs);
         pipeline.add(&webrtc)?;
 
         let stats = Arc::new(Stats::default());
@@ -380,6 +387,39 @@ impl Player {
     }
 }
 
+/// Retransmission schedule for ICE checks: the first retry after `initial_ms`,
+/// doubling each time, until about `secs` have passed. Returns
+/// `(initial_ms, retransmissions)`.
+pub fn ice_check_schedule(secs: u32) -> (u32, u32) {
+    let initial_ms = 200u32;
+    let budget_ms = secs.max(1) as u64 * 1000;
+    let (mut total, mut delay, mut n) = (0u64, initial_ms as u64, 0u32);
+    while total < budget_ms && n < 16 {
+        total += delay;
+        delay *= 2;
+        n += 1;
+    }
+    (initial_ms, n.max(3))
+}
+
+/// Applies the ICE check window to webrtcbin's libnice agent.
+fn configure_ice_timing(webrtc: &gst::Element, secs: u32) {
+    let ice = webrtc.property::<glib::Object>("ice-agent");
+    if !ice.has_property("agent", None) {
+        tracing::warn!("ICE agent {} has no libnice agent; using default timing", ice.type_());
+        return;
+    }
+    let agent = ice.property::<glib::Object>("agent");
+    let (initial_ms, retransmissions) = ice_check_schedule(secs);
+    agent.set_property("stun-initial-timeout", initial_ms);
+    agent.set_property("stun-max-retransmissions", retransmissions);
+    // Wait this long after all pairs failed before declaring ICE failed.
+    agent.set_property("idle-timeout", 10_000u32);
+    tracing::debug!(
+        "ICE checks: first retry after {initial_ms} ms, {retransmissions} retransmissions (~{secs} s)"
+    );
+}
+
 fn hook_data_channel(dc: &WebRTCDataChannel, kind: ChannelKind, events: mpsc::UnboundedSender<PlayerEvent>) {
     {
         let events = events.clone();
@@ -551,4 +591,18 @@ fn on_decoded_pad(
     }
     pad.link(&chain[0].static_pad("sink").unwrap())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ice_check_schedule;
+
+    #[test]
+    fn ice_schedule_covers_requested_window() {
+        // 200 ms doubling: 200+400+...+12800 = 25.4 s, +25.6 s exceeds 30 s
+        assert_eq!(ice_check_schedule(30), (200, 8));
+        assert_eq!(ice_check_schedule(2), (200, 4));
+        assert_eq!(ice_check_schedule(0).1, 3);
+        assert!(ice_check_schedule(10_000).1 <= 16);
+    }
 }

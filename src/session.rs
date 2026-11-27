@@ -155,7 +155,8 @@ async fn run_session(
     let mut connected = false;
     let mut last_bytes = 0u64;
     let mut last_frames = 0u64;
-    let connect_deadline = tokio::time::sleep(Duration::from_secs(30));
+    let connect_secs = opts.player.ice_check_secs as u64 + 20;
+    let connect_deadline = tokio::time::sleep(Duration::from_secs(connect_secs));
     tokio::pin!(connect_deadline);
 
     loop {
@@ -189,7 +190,7 @@ async fn run_session(
                 last_frames = frames;
             }
             _ = &mut connect_deadline, if !connected => {
-                bail!("WebRTC connection was not established within 30 seconds");
+                bail!("WebRTC connection was not established within {connect_secs} seconds");
             }
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("Stopping stream...");
