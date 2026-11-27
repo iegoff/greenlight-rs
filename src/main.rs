@@ -100,7 +100,7 @@ struct StreamArgs {
     #[arg(long)]
     no_audio: bool,
     /// Jitter buffer latency in ms.
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 20)]
     latency: u32,
     /// Also play audio as soon as it arrives (no clock sync at all).
     #[arg(long)]

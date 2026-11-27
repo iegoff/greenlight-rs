@@ -88,7 +88,9 @@ impl Default for PlayerConfig {
             video_kbps: 0,
             audio_kbps: 0,
             stun_server: None,
-            latency_ms: 100,
+            // The xbox.com web client keeps ~3 ms of video in its jitter buffer;
+            // waiting for retransmissions over a ~100 ms RTT path only adds lag.
+            latency_ms: 20,
             video_sink: None,
             audio_sink: None,
             low_latency: false,
@@ -513,6 +515,16 @@ fn hook_data_channel(dc: &WebRTCDataChannel, kind: ChannelKind, events: mpsc::Un
     });
 }
 
+/// waylandsink on Wayland (it can go fullscreen; autovideosink tends to pick
+/// glimagesink, which can't), autovideosink otherwise.
+fn default_video_sink() -> &'static str {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() && gst::ElementFactory::find("waylandsink").is_some() {
+        "waylandsink"
+    } else {
+        "autovideosink"
+    }
+}
+
 fn make_sink(desc: Option<&str>, default: &str) -> Result<gst::Element> {
     match desc {
         Some(d) => Ok(gst::parse::bin_from_description(d, true)?.upcast()),
@@ -604,7 +616,7 @@ fn on_decoded_pad(
 
     let chain: Vec<gst::Element> = if name.starts_with("video/") {
         let convert = gst::ElementFactory::make("videoconvert").build()?;
-        let sink = make_sink(config.video_sink.as_deref(), "autovideosink")?;
+        let sink = make_sink(config.video_sink.as_deref(), default_video_sink())?;
         if !config.video_sync && sink.has_property("sync", None) {
             sink.set_property("sync", false);
         }

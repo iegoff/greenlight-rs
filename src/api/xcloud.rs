@@ -333,7 +333,9 @@ pub fn device_info(width: u32, height: u32) -> String {
             },
             "browser": { "browserName": "edge", "browserVersion": "158.0.4370.45" },
             "hw": { "make": "unknown", "model": "unknown", "platformType": "desktop", "sdkType": "web" },
-            "os": { "name": "linux", "ver": "unknown", "platform": "desktop" },
+            // The original Greenlight player asked for 720p by reporting an
+            // Android device; the server picks the stream resolution from this.
+            "os": { "name": if height <= 720 { "android" } else { "linux" }, "ver": "unknown", "platform": "desktop" },
         },
     })
     .to_string()
