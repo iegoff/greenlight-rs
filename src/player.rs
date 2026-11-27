@@ -72,6 +72,9 @@ pub struct PlayerConfig {
     /// Prebuilt video sink (e.g. a gtk4paintablesink created on the GTK main
     /// thread). Used for the first video stream instead of `video_sink`.
     pub video_sink_element: Option<gst::Element>,
+    /// Jitter buffer for audio in ms (video uses `latency_ms`). Audio gaps
+    /// are more audible than a little extra audio delay.
+    pub audio_latency_ms: u32,
     /// Request retransmission of lost video packets. Off by default: with a
     /// small jitter buffer the resent packets arrive too late to help.
     pub nack: bool,
@@ -105,6 +108,7 @@ impl Default for PlayerConfig {
             video_sync: false,
             video_sink_element: None,
             nack: false,
+            audio_latency_ms: 60,
             ice_check_secs: 0,
         }
     }
@@ -326,9 +330,13 @@ impl Player {
         {
             let fullscreen = config.fullscreen;
             let video_sync = config.video_sync;
+            let audio_latency_ms = config.audio_latency_ms;
             pipeline.connect_deep_element_added(move |_, _, el| {
                 let Some(factory) = el.factory() else { return };
                 tune_element(&factory.name(), el);
+                if factory.name() == "rtpjitterbuffer" {
+                    set_audio_jitter_latency(el, audio_latency_ms);
+                }
                 let klass = factory.metadata(gst::ELEMENT_METADATA_KLASS).unwrap_or_default();
                 if !(klass.contains("Sink") && klass.contains("Video")) || factory.name().starts_with("auto") {
                     return;
@@ -551,6 +559,32 @@ fn configure_ice_timing(webrtc: &gst::Element, secs: u32) {
     );
 }
 
+/// Payload type of the Opus audio stream in our offer.
+const AUDIO_PT: u8 = 111;
+
+/// Raises the latency of the audio stream's jitter buffer (webrtcbin's
+/// `latency` applies to all streams). The stream is identified by the
+/// payload type of its first packet.
+fn set_audio_jitter_latency(jb: &gst::Element, latency_ms: u32) {
+    let Some(pad) = jb.static_pad("sink") else { return };
+    let jb_weak = jb.downgrade();
+    pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+        let Some(buffer) = info.buffer() else { return gst::PadProbeReturn::Ok };
+        let Ok(rtp) = gst_rtp::RTPBuffer::from_buffer_readable(buffer) else {
+            return gst::PadProbeReturn::Ok;
+        };
+        if rtp.payload_type() == AUDIO_PT {
+            if let Some(jb) = jb_weak.upgrade() {
+                if jb.property::<u32>("latency") < latency_ms {
+                    jb.set_property("latency", latency_ms);
+                    tracing::debug!("audio jitter buffer: {latency_ms} ms");
+                }
+            }
+        }
+        gst::PadProbeReturn::Remove
+    });
+}
+
 /// RTP header extension id and URI for transport-wide congestion control
 /// (same as the xbox.com web client's offer).
 pub const TWCC_EXT_ID: u32 = 3;
@@ -580,6 +614,12 @@ fn tune_element(factory: &str, el: &gst::Element) {
             if el.has_property("buffer-time", None) {
                 el.set_property("buffer-time", 60_000i64);
                 el.set_property("latency-time", 10_000i64);
+            }
+            // Follow the stream clock by resampling slightly instead of
+            // skipping/repeating 20 ms chunks ("correct clock skew"), which
+            // is audible as clicks about once a second.
+            if el.has_property("slave-method", None) {
+                el.set_property_from_str("slave-method", "resample");
             }
         }
         "opusdec" => {

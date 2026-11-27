@@ -342,6 +342,18 @@ async fn negotiates_streams_and_channels_with_fake_console() {
     }
     assert_eq!(tuned, (true, true), "depayloader/decoder not found or not tuned");
 
+    // Per-stream jitter buffers: audio gets the larger audio latency.
+    let mut latencies: Vec<u32> = player
+        .pipeline()
+        .iterate_recurse()
+        .into_iter()
+        .flatten()
+        .filter(|e| e.factory().is_some_and(|f| f.name() == "rtpjitterbuffer"))
+        .map(|e| e.property::<u32>("latency"))
+        .collect();
+    latencies.sort();
+    assert_eq!(latencies, vec![20, 60], "expected video 20 ms + audio 60 ms jitter buffers");
+
     // The fake console (the sender) must receive TWCC feedback from us.
     let (tx, rx) = tokio::sync::oneshot::channel();
     let p = gst::Promise::with_change_func(move |r| {
