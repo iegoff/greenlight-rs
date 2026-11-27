@@ -189,13 +189,17 @@ async fn negotiates_streams_and_channels_with_fake_console() {
     assert!(offer.contains("m=application"), "{offer}");
     assert!(offer.contains("stereo=1"), "{offer}");
     assert!(offer.contains("profile-level-id=4d001f"), "{offer}");
+    // Browser-style offer: numeric mids and a 4-character ICE ufrag.
+    assert!(offer.contains("a=group:BUNDLE 0 1 2"), "{offer}");
+    let ufrag = offer.lines().find_map(|l| l.strip_prefix("a=ice-ufrag:")).unwrap().trim();
+    assert_eq!(ufrag.len(), 4, "{offer}");
 
     let answer = console.answer(&offer).await;
     player.set_remote_answer(&answer).await.unwrap();
 
     let local = player.local_candidates(Duration::from_secs(5)).await;
     assert!(!local.is_empty(), "no local candidates");
-    assert!(local.iter().all(|c| c.sdp_mid.as_deref() == Some("audio0")), "candidates must carry the SDP mid: {local:?}");
+    assert!(local.iter().all(|c| c.sdp_mid.as_deref() == Some("0")), "candidates must carry the SDP mid: {local:?}");
     // Round-trip through the JSON wire format used by the xCloud API.
     let json = serde_json::to_string(&local).unwrap();
     let local: Vec<IceCandidate> = serde_json::from_str(&json).unwrap();

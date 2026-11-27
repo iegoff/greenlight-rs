@@ -19,6 +19,63 @@ pub fn munge_offer(sdp: &str, stereo: bool, video_kbps: u32, audio_kbps: u32) ->
     sdp
 }
 
+fn rewrite_lines(sdp: &str, f: impl Fn(&str) -> String) -> String {
+    let eol = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut s = sdp.lines().map(|l| f(l)).collect::<Vec<_>>().join(eol);
+    if sdp.ends_with('\n') {
+        s.push_str(eol);
+    }
+    s
+}
+
+/// Replaces the ICE username fragment and password of every m-line.
+pub fn set_ice_credentials(sdp: &str, ufrag: &str, pwd: &str) -> String {
+    rewrite_lines(sdp, |line| {
+        if line.starts_with("a=ice-ufrag:") {
+            format!("a=ice-ufrag:{ufrag}")
+        } else if line.starts_with("a=ice-pwd:") {
+            format!("a=ice-pwd:{pwd}")
+        } else {
+            line.to_string()
+        }
+    })
+}
+
+/// Renames media IDs (`a=mid:` and the BUNDLE group) using `(from, to)` pairs.
+/// Used to show the console browser-style mids (`0`, `1`, `2`) while
+/// webrtcbin keeps its own (`audio0`, `video1`, ...), and back for the answer.
+pub fn rename_mids(sdp: &str, map: &[(String, String)]) -> String {
+    let lookup = |m: &str| {
+        map.iter().find(|(from, _)| from == m).map(|(_, to)| to.clone()).unwrap_or_else(|| m.to_string())
+    };
+    rewrite_lines(sdp, |line| {
+        if let Some(mid) = line.strip_prefix("a=mid:") {
+            format!("a=mid:{}", lookup(mid.trim()))
+        } else if let Some(group) = line.strip_prefix("a=group:BUNDLE") {
+            let ids: Vec<String> = group.split_whitespace().map(lookup).collect();
+            format!("a=group:BUNDLE {}", ids.join(" "))
+        } else {
+            line.to_string()
+        }
+    })
+}
+
+/// `(native mid, m-line index)` pairs, i.e. the mapping to browser-style mids.
+pub fn browser_mid_map(sdp: &str) -> Vec<(String, String)> {
+    media_mids(sdp).into_iter().enumerate().map(|(i, m)| (m, i.to_string())).collect()
+}
+
+/// Random ICE credentials in the browser style (4-char ufrag, 24-char pwd).
+pub fn random_ice_credentials() -> (String, String) {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let bytes = *uuid::Uuid::new_v4().as_bytes();
+    let more = *uuid::Uuid::new_v4().as_bytes();
+    let pick = |b: u8| CHARS[b as usize % CHARS.len()] as char;
+    let ufrag: String = bytes[..4].iter().map(|b| pick(*b)).collect();
+    let pwd: String = bytes[4..16].iter().chain(more[..12].iter()).map(|b| pick(*b)).collect();
+    (ufrag, pwd)
+}
+
 /// Inserts (or replaces) a `b=AS:` line for the first media section of `media`.
 pub fn set_bitrate(sdp: &str, media: &str, kbps: u32) -> String {
     let eol = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
@@ -145,6 +202,28 @@ mod tests {
     fn mids() {
         let sdp = "v=0\r\na=group:BUNDLE audio0 video1\r\nm=audio 9 X 111\r\na=mid:audio0\r\nm=video 9 X 96\r\na=mid:video1\r\nm=application 9 X webrtc-datachannel\r\n";
         assert_eq!(media_mids(sdp), vec!["audio0", "video1", "2"]);
+    }
+
+    #[test]
+    fn browser_style_offer() {
+        let sdp = "v=0\r\na=group:BUNDLE audio0 video1 application2\r\nm=audio 9 X 111\r\na=ice-ufrag:LONGLONGLONG/+\r\na=ice-pwd:oldpwd\r\na=mid:audio0\r\nm=video 9 X 96\r\na=ice-ufrag:LONGLONGLONG/+\r\na=mid:video1\r\nm=application 9 X webrtc-datachannel\r\na=mid:application2\r\n";
+        let local = set_ice_credentials(sdp, "AbC1", &"p".repeat(24));
+        assert_eq!(local.matches("a=ice-ufrag:AbC1\r\n").count(), 2);
+        assert!(local.contains("a=mid:audio0") && !local.contains("LONG"));
+
+        let map = browser_mid_map(&local);
+        let wire = rename_mids(&local, &map);
+        assert!(wire.contains("a=group:BUNDLE 0 1 2\r\n"), "{wire}");
+        assert!(wire.contains("a=mid:0\r\n") && wire.contains("a=mid:2\r\n"));
+        assert!(!wire.contains("audio0") && wire.ends_with("\r\n"));
+
+        // and back, for the answer
+        let back: Vec<(String, String)> = map.iter().map(|(a, b)| (b.clone(), a.clone())).collect();
+        assert_eq!(rename_mids(&wire, &back), local);
+
+        let (u, p) = random_ice_credentials();
+        assert_eq!((u.len(), p.len()), (4, 24));
+        assert!(u.chars().chain(p.chars()).all(|c| c.is_ascii_alphanumeric()));
     }
 
     #[test]

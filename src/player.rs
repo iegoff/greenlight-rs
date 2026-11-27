@@ -117,8 +117,8 @@ pub struct Player {
     channels: Arc<Mutex<HashMap<ChannelKind, WebRTCDataChannel>>>,
     candidates: Arc<Mutex<Vec<IceCandidate>>>,
     gathering: watch::Receiver<WebRTCICEGatheringState>,
-    /// `a=mid:` value of each m-line in the local description.
-    local_mids: Mutex<Vec<String>>,
+    /// `(webrtcbin mid, browser-style mid)` for each m-line of the local offer.
+    mid_map: Mutex<Vec<(String, String)>>,
     pub stats: Arc<Stats>,
 }
 
@@ -303,7 +303,7 @@ impl Player {
             channels.lock().unwrap().insert(kind, dc);
         }
 
-        Ok(Self { pipeline, webrtc, config, channels, candidates, gathering, local_mids: Mutex::new(Vec::new()), stats })
+        Ok(Self { pipeline, webrtc, config, channels, candidates, gathering, mid_map: Mutex::new(Vec::new()), stats })
     }
 
     /// Creates the SDP offer, applies Greenlight's tweaks and sets it as local
@@ -317,17 +317,27 @@ impl Player {
             .map_err(|_| anyhow!("create-offer failed: {reply}"))?;
         let text = offer.sdp().as_text()?;
         let munged = sdp::munge_offer(&text, self.config.stereo, self.config.video_kbps, self.config.audio_kbps);
+        // Browser-style ICE credentials (4-char ufrag), like the Xbox web client.
+        let (ufrag, pwd) = sdp::random_ice_credentials();
+        let munged = sdp::set_ice_credentials(&munged, &ufrag, &pwd);
         let msg = gst_sdp::SDPMessage::parse_buffer(munged.as_bytes()).context("re-parsing munged SDP")?;
         let desc = WebRTCSessionDescription::new(WebRTCSDPType::Offer, msg);
 
         let (p, rx) = promise();
         self.webrtc.emit_by_name::<()>("set-local-description", &[&desc, &p]);
         rx.await??;
-        *self.local_mids.lock().unwrap() = sdp::media_mids(&munged);
-        Ok(munged)
+        // webrtcbin keeps its own mids (GStreamer >= 1.26 rejects renamed ones);
+        // the console sees browser-style mids (0, 1, 2).
+        let map = sdp::browser_mid_map(&munged);
+        let wire = sdp::rename_mids(&munged, &map);
+        *self.mid_map.lock().unwrap() = map;
+        Ok(wire)
     }
 
     pub async fn set_remote_answer(&self, sdp: &str) -> Result<()> {
+        let back: Vec<(String, String)> =
+            self.mid_map.lock().unwrap().iter().map(|(native, wire)| (wire.clone(), native.clone())).collect();
+        let sdp = sdp::rename_mids(sdp, &back);
         let msg = gst_sdp::SDPMessage::parse_buffer(sdp.as_bytes()).context("parsing remote SDP")?;
         let desc = WebRTCSessionDescription::new(WebRTCSDPType::Answer, msg);
         let (p, rx) = promise();
@@ -344,12 +354,13 @@ impl Player {
     pub async fn local_candidates(&self, timeout: Duration) -> Vec<IceCandidate> {
         let mut rx = self.gathering.clone();
         let _ = tokio::time::timeout(timeout, rx.wait_for(|s| *s == WebRTCICEGatheringState::Complete)).await;
-        // Report the real mid of each m-line (like browsers do), not just its index.
-        let mids = self.local_mids.lock().unwrap().clone();
+        // Browser-style mid for each candidate: the m-line index ("0", "1", ...),
+        // matching the mids in the offer the console received.
+        let map = self.mid_map.lock().unwrap().clone();
         let mut candidates = self.candidates.lock().unwrap().clone();
         for c in &mut candidates {
-            if let Some(mid) = c.sdp_m_line_index.and_then(|i| mids.get(i as usize)) {
-                c.sdp_mid = Some(mid.clone());
+            if let Some((_, wire)) = c.sdp_m_line_index.and_then(|i| map.get(i as usize)) {
+                c.sdp_mid = Some(wire.clone());
             }
         }
         candidates
