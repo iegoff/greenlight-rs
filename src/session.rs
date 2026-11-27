@@ -129,6 +129,9 @@ async fn run_session(
         bail!("no local ICE candidates gathered");
     }
     tracing::info!("sending {} local ICE candidates", local.len());
+    for c in &local {
+        tracing::debug!("local candidate [{}]: {}", c.sdp_mid.as_deref().unwrap_or("?"), c.candidate);
+    }
     let remote = api.exchange_ice(session_id, &local).await?;
     tracing::info!("received {} remote ICE candidates", remote.len());
     player.add_remote_candidates(&remote);

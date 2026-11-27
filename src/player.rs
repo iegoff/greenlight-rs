@@ -210,7 +210,8 @@ impl Player {
                 let candidate = values[2].get::<String>().unwrap_or_default();
                 if !candidate.is_empty() {
                     candidates.lock().unwrap().push(IceCandidate {
-                        candidate: format!("a={candidate}"),
+                        // Bare `candidate:...` like a browser's RTCIceCandidate.candidate.
+                        candidate,
                         sdp_m_line_index: Some(mline),
                         sdp_mid: Some(mline.to_string()),
                         message_type: None,
