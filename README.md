@@ -206,6 +206,14 @@ cargo test
 
 Not covered: the HTTP calls to Microsoft's real endpoints, and interoperability with real Xbox/xCloud servers.
 
+## Findings and debugging notes
+
+[docs/FINDINGS.md](docs/FINDINGS.md) records what it took to get remote play working against a real Xbox, and the recipes for debugging it:
+- the xbox.com signalling formats (where Greenlight's are outdated), the browser-style offer, ICE and NAT behaviour;
+- loss and latency tuning, input quirks, GStreamer version differences, and Steam Deck/Flatpak details.
+
+Read it before changing signalling, ICE or the media pipeline.
+
 ## License
 
 MIT, like the original Greenlight. See [LICENSE](LICENSE).
