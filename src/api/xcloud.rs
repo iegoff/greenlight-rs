@@ -144,7 +144,9 @@ impl XCloudApi {
     async fn post(&self, path: &str, body: &Value, extra: &[(&'static str, String)]) -> Result<Value> {
         let mut headers = self.headers();
         headers.extend_from_slice(extra);
-        Ok(self.http.send(Method::POST, &self.url(path), &headers, Some(body)).await?.1)
+        let (status, resp) = self.http.send(Method::POST, &self.url(path), &headers, Some(body)).await?;
+        tracing::debug!("POST {path} -> {status} {resp}");
+        Ok(resp)
     }
 
     pub async fn titles(&self) -> Result<Value> {
@@ -167,7 +169,7 @@ impl XCloudApi {
         let body = json!({
             "titleId": if self.kind == StreamKind::Cloud { target } else { "" },
             "systemUpdateGroup": "",
-            "clientSessionId": "",
+            "clientSessionId": client_session_id(),
             "settings": {
                 "nanoVersion": "V3;WebrtcTransport.dll",
                 "enableTextToSpeech": false,
@@ -177,7 +179,7 @@ impl XCloudApi {
                 "useIceConnection": false,
                 "timezoneOffsetMinutes": timezone_offset_minutes(),
                 "sdkType": "web",
-                "osName": "windows",
+                "osName": "linux",
             },
             "serverId": if self.kind == StreamKind::Home { target } else { "" },
             "fallbackRegionNames": [],
@@ -191,6 +193,12 @@ impl XCloudApi {
             .await
             .context("starting stream session")?;
         Ok(serde_json::from_value(resp)?)
+    }
+
+    /// Session configuration (console address, STUN servers, ...). The web
+    /// client fetches this after provisioning, before the SDP exchange.
+    pub async fn configuration(&self, session_id: &str) -> Result<Value> {
+        Ok(self.get(&self.session(session_id, "/configuration")).await?.1)
     }
 
     pub async fn state(&self, session_id: &str) -> Result<StateResponse> {
@@ -297,29 +305,39 @@ fn timezone_offset_minutes() -> i32 {
     Local::now().offset().local_minus_utc() / 60
 }
 
-/// Device description sent with `/play`. Mirrors the Xbox app on Windows.
+/// Device description sent with `/play`. Mirrors the xbox.com web client
+/// (play.xbox.com in Edge on Linux), which is the signalling flavour this
+/// client implements.
 pub fn device_info() -> String {
     json!({
         "appInfo": {
             "env": {
-                "clientAppId": "Microsoft.GamingApp",
-                "clientAppType": "native",
-                "clientAppVersion": "2203.1001.4.0",
-                "clientSdkVersion": "8.5.2",
+                "clientAppId": "play.xbox.com",
+                "clientAppType": "browser",
+                "clientSdkVersion": "placeholder",
                 "httpEnvironment": "prod",
                 "sdkInstallId": "",
             }
         },
         "dev": {
-            "hw": { "make": "Microsoft", "model": "Surface Pro", "sdktype": "native" },
-            "os": { "name": "Windows 11", "ver": "22631.2715", "platform": "desktop" },
             "displayInfo": {
-                "dimensions": { "widthInPixels": 1920, "heightInPixels": 1080 },
+                "dimensions": { "heightInPixels": 1080, "widthInPixels": 1920 },
                 "pixelDensity": { "dpiX": 1, "dpiY": 1 },
             },
+            "browser": { "browserName": "edge", "browserVersion": "158.0.4370.45" },
+            "hw": { "make": "unknown", "model": "unknown", "platformType": "desktop", "sdkType": "web" },
+            "os": { "name": "linux", "ver": "unknown", "platform": "desktop" },
         },
     })
     .to_string()
+}
+
+/// 22-character random id, like the web client's `clientSessionId`.
+fn client_session_id() -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let a = *uuid::Uuid::new_v4().as_bytes();
+    let b = *uuid::Uuid::new_v4().as_bytes();
+    a.iter().chain(b.iter()).take(22).map(|x| CHARS[*x as usize % CHARS.len()] as char).collect()
 }
 
 #[cfg(test)]

@@ -115,8 +115,26 @@ async fn run_session(
     }
     eprintln!("Session provisioned, negotiating WebRTC...");
 
+    // Like the web client: fetch the session configuration before the SDP
+    // exchange. Use its STUN server unless one was given explicitly.
+    let mut player_config = opts.player.clone();
+    match api.configuration(session_id).await {
+        Ok(cfg) => {
+            tracing::debug!("session configuration: {}", redact_configuration(&cfg));
+            if player_config.stun_server.is_none() {
+                if let Some(stun) = cfg
+                    .pointer("/serverDetails/stunServerAddresses/0")
+                    .and_then(|v| v.as_str())
+                {
+                    player_config.stun_server = Some(stun.replacen("stun:", "stun://", 1));
+                }
+            }
+        }
+        Err(e) => tracing::warn!("fetching session configuration: {e:#}"),
+    }
+
     let (tx, mut events) = mpsc::unbounded_channel();
-    let player = Player::new(opts.player.clone(), tx)?;
+    let player = Player::new(player_config, tx)?;
 
     let offer = player.create_offer().await?;
     tracing::debug!("local offer:\n{offer}");
@@ -282,6 +300,15 @@ async fn run_session(
 
     player.stop();
     Ok(())
+}
+
+/// The configuration includes an SRTP key; keep it out of logs.
+fn redact_configuration(cfg: &serde_json::Value) -> serde_json::Value {
+    let mut c = cfg.clone();
+    if let Some(srtp) = c.pointer_mut("/serverDetails/srtp") {
+        *srtp = serde_json::json!("<redacted>");
+    }
+    c
 }
 
 fn apply_key(input: &InputState, key: &str, pressed: bool) {
